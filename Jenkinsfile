@@ -2,24 +2,25 @@ pipeline {
     agent any
 
     stages {
-        stage('Checkout') {
+        stage('Klocwork inject') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Kwinject') {
-            steps {
-                sh '''
-                    kwinject make
-                    if [ ! -f kwinject.out ]; then
-                      echo "[ERROR] kwinject.out was not generated. Stopping the build."
-                      exit 1
-                    else
-                      echo "[INFO] kwinject.out has been generated successfully."
-                    fi
-                '''
+                script {
+                    sh '''
+                        echo "[INFO] Add Klocwork tools to PATH"
+                        export PATH=/home/ec2-user/kwbuildtools/kwbuildtools/bin:$PATH
+                        echo "[INFO] Run kwinject make"
+                        kwinject make
+                        echo "[INFO] Check if kwinject.out exists"
+                        if [ -f kwinject.out ]; then
+                            echo "[SUCCESS] kwinject.out has been generated."
+                        else
+                            echo "[ERROR] kwinject.out was not created."
+                            exit 1
+                        fi
+                    '''
+                }
             }
         }
     }
 }
+
