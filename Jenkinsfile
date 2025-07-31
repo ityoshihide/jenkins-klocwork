@@ -2,23 +2,14 @@ pipeline {
     agent any
 
     environment {
-        KW_PATH = "/home/ec2-user/kwbuildtools/kwbuildtools/bin"
+        KW_PATH = "/opt/klocwork/kwbuildtools/bin"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo '[INFO] Checking out the repository.'
+                echo '[INFO] Checking out the repository...'
                 checkout scm
-            }
-        }
-
-        stage('Set permission') {
-            steps {
-                echo '[INFO] Setting execute permission on kwinject...'
-                sh '''
-                    chmod +x ${KW_PATH}/kwinject
-                '''
             }
         }
 
