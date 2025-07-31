@@ -1,0 +1,2 @@
+# githubactions
+msys-softverify/demosthenesをcloneしてklocworkとの連携を実行
