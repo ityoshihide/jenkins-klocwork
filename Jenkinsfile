@@ -1,26 +1,41 @@
 pipeline {
     agent any
 
+    environment {
+        KW_PATH = "/home/ec2-user/kwbuildtools/kwbuildtools/bin"
+    }
+
     stages {
-        stage('Klocwork inject') {
+        stage('Checkout') {
             steps {
-                script {
-                    sh '''
-                        echo "[INFO] Add Klocwork tools to PATH"
-                        export PATH=/home/ec2-user/kwbuildtools/kwbuildtools/bin:$PATH
-                        echo "[INFO] Run kwinject make"
-                        kwinject make
-                        echo "[INFO] Check if kwinject.out exists"
-                        if [ -f kwinject.out ]; then
-                            echo "[SUCCESS] kwinject.out has been generated."
-                        else
-                            echo "[ERROR] kwinject.out was not created."
-                            exit 1
-                        fi
-                    '''
-                }
+                echo '[INFO] Checking out the repository...'
+                checkout scm
+            }
+        }
+
+        stage('Run kwinject') {
+            steps {
+                echo '[INFO] Running kwinject with full path...'
+                sh '''
+                    ${KW_PATH}/kwinject make
+                '''
+            }
+        }
+
+        stage('Verify kwinject.out') {
+            steps {
+                echo '[INFO] Verifying kwinject.out...'
+                sh '''
+                    if [ -f kwinject.out ]; then
+                        echo "[INFO] kwinject.out generated successfully."
+                    else
+                        echo "[ERROR] kwinject.out not found!"
+                        exit 1
+                    fi
+                '''
             }
         }
     }
 }
+
 
