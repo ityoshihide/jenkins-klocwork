@@ -1,2 +1,2 @@
-# githubactions
-msys-softverify/demosthenesをcloneしてklocworkとの連携を実行
+# JenkinsのCICDパイプラインによるKlocworkの解析自動化
+udemyの講座を参考にしつつ、EC2インスタンス内にJenkinsを立てて、Githubでコミットされたタイミングで自動解析をかける
