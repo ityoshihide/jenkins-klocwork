@@ -13,6 +13,15 @@ pipeline {
             }
         }
 
+        stage('Set permission') {
+            steps {
+                echo '[INFO] Setting execute permission on kwinject...'
+                sh '''
+                    chmod +x ${KW_PATH}/kwinject
+                '''
+            }
+        }
+
         stage('Run kwinject') {
             steps {
                 echo '[INFO] Running kwinject with full path...'
@@ -37,5 +46,3 @@ pipeline {
         }
     }
 }
-
-
