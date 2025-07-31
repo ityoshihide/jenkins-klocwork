@@ -8,7 +8,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                echo '[INFO] Checking out the repository...'
+                echo '[INFO] Checking out the repository..'
                 checkout scm
             }
         }
