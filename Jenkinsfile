@@ -24,7 +24,7 @@ pipeline {
 
         stage('Verify kwinject.out') {
             steps {
-                echo '[INFO] Verifying kwinject.out...'
+                echo '[INFO] Verifying kwinject.out..'
                 sh '''
                     if [ -f kwinject.out ]; then
                         echo "[INFO] kwinject.out generated successfully."
