@@ -40,7 +40,7 @@ pipeline {
             steps {
                 echo '[INFO] Running kwbuildproject...'
                 sh '''
-                    ${KW_PATH}/kwbuildproject --url http://192.168.99.1:2520/jenkins -o table kwinject.out -f
+                    ${KW_PATH}/kwbuildproject --url http://192.50.110.196:2520/jenkins -o table kwinject.out -f
                 '''
             }
         }
@@ -49,7 +49,7 @@ pipeline {
             steps {
                 echo '[INFO] Loading project into Klocwork server using kwadmin...'
                 sh '''
-                    ${KW_PATH}/kwadmin --url http://192.168.99.1:2520 load jenkins table
+                    ${KW_PATH}/kwadmin --url http://192.50.110.196:2520 load jenkins table
                 '''
             }
         }
