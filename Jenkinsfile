@@ -15,7 +15,7 @@ pipeline {
 
         stage('Run kwinject') {
             steps {
-                echo '[INFO] Running kwinject with full path...'
+                echo '[INFO] Running kwinject with full path..'
                 sh '''
                     ${KW_PATH}/kwinject make
                 '''
