@@ -8,7 +8,7 @@ pipeline {
         bat '''
         @echo off
         set "KW_BIN=C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin"
-        set "SLN=C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2022\\4.sln"
+        set "SLN=C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2019\\4.sln"
         set "KW_URL=http://localhost:2520"
         set "PROJECT=sample"
 
