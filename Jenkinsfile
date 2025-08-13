@@ -2,135 +2,121 @@ pipeline {
   agent any
 
   environment {
-    // Klocwork tools (contains kwinject.exe, kwbuildproject.exe, kwadmin.exe)
+    // Klocworkツール一式（kwinject.exe / kwbuildproject.exe / kwadmin.exe）
     KW_TOOLS = 'C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin'
-    // Folder that contains the solution (.sln). We will auto-pick the first *.sln in this folder.
+    // .slnが入っているフォルダ（最初の *.sln を自動選択）
     SLN_DIR  = 'C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2022'
-    // Extend PATH so Jenkins can find Klocwork CLI
+    // PATHにKlocwork CLIを追加
     PATH     = "${env.PATH};${env.KW_TOOLS}"
   }
 
   stages {
-    stage('Checkout (optional)') {
-      when { expression { return false } } // Disable if you do not need to fetch any repo.
-      steps {
-        checkout([$class: 'GitSCM',
-          branches: [[name: '*/main']],
-          userRemoteConfigs: [[
-            url: 'https://github.com/ityoshihide/jenkins-klocwork.git',
-            credentialsId: 'MyGithubCredentials'
-          ]]
-        ])
-      }
-    }
-
-    stage('Resolve MSBuild & Solution') {
+    stage('Resolve MSBuild & .sln') {
       steps {
         bat '''
-        echo [INFO] Resolving MSBuild path (VS2022)...
+        @echo off
+        setlocal EnableExtensions EnableDelayedExpansion
+
+        rem --- Resolve MSBuild ---
+        set "MSBUILD="
         set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"
-        if exist "%VSWHERE%" (
-          for /f "usebackq tokens=*" %%A in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\MSBuild.exe"`) do (
-            set "MSBUILD=%%A"
+        if exist "!VSWHERE!" (
+          for /f "usebackq delims=" %%A in (`"!VSWHERE!" -latest -requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\MSBuild.exe"`) do (
+            set "MSBUILD=%%~fA"
           )
         )
-
         if not defined MSBUILD (
-          echo [WARN] vswhere not found or MSBuild not located. Falling back to PATH lookup...
           for /f "delims=" %%A in ('where MSBuild.exe 2^>nul') do (
-            set "MSBUILD=%%A"
-            goto :FOUND_MSBUILD
+            set "MSBUILD=%%~fA"
+            goto FOUND_MSBUILD
           )
-          echo [ERROR] MSBuild.exe not found. Please install VS Build Tools or add MSBuild to PATH.
+          echo [ERROR] MSBuild.exe not found. Install VS Build Tools or add to PATH.
           exit /b 1
         )
         :FOUND_MSBUILD
-        echo [INFO] MSBuild resolved to: %MSBUILD%
+        echo [INFO] MSBuild: !MSBUILD!
 
-        echo [INFO] Detecting .sln under: "%SLN_DIR%"
+        rem --- Pick first .sln under SLN_DIR ---
         set "SOLUTION="
-        for %%F in ("%SLN_DIR%\\*.sln") do (
-          set "SOLUTION=%%~fF"
-          goto :FOUND_SOLUTION
+        for /f "delims=" %%F in ('dir /b /a:-d "%SLN_DIR%\\*.sln" 2^>nul') do (
+          set "SOLUTION=%SLN_DIR%\\%%~F"
+          goto FOUND_SOLUTION
         )
-        echo [ERROR] No .sln file found in "%SLN_DIR%".
+        echo [ERROR] No .sln in "%SLN_DIR%".
         exit /b 1
         :FOUND_SOLUTION
-        echo [INFO] Using solution: %SOLUTION%
+        echo [INFO] Solution: !SOLUTION!
 
-        echo MSBUILD=%MSBUILD%> build.env
-        echo SOLUTION=%SOLUTION%>> build.env
+        rem --- Export for next stages ---
+        >  build.env echo MSBUILD=!MSBUILD!
+        >> build.env echo SOLUTION=!SOLUTION!
+
+        endlocal
         '''
       }
     }
 
-    stage('Run kwinject') {
+    stage('Build with kwinject') {
       steps {
         bat '''
+        @echo off
+        setlocal
         if not exist "%KW_TOOLS%\\kwinject.exe" (
-          echo [ERROR] kwinject.exe not found at "%KW_TOOLS%".
+          echo [ERROR] kwinject.exe not found: "%KW_TOOLS%"
           exit /b 1
         )
-
         call build.env
+
         echo [INFO] Running kwinject...
         del /q kwinject.out 2>nul
 
         "%KW_TOOLS%\\kwinject.exe" --output kwinject.out -- ^
           "%MSBUILD%" "%SOLUTION%" /t:Rebuild /p:Configuration=Release
-
-        set "RC=%ERRORLEVEL%"
-        if %RC% NEQ 0 (
-          echo [ERROR] Build (wrapped by kwinject) failed with code %RC%.
-          exit /b %RC%
-        )
-        '''
-      }
-    }
-
-    stage('Verify kwinject.out') {
-      steps {
-        bat '''
-        if not exist kwinject.out (
-          echo [ERROR] kwinject.out not found.
+        if errorlevel 1 (
+          echo [ERROR] Build failed (kwinject wrapper).
           exit /b 1
         )
-        for %%A in (kwinject.out) do (
-          if %%~zA==0 (
-            echo [ERROR] kwinject.out is empty.
-            exit /b 1
-          )
+
+        if not exist kwinject.out (
+          echo [ERROR] kwinject.out missing.
+          exit /b 1
         )
-        echo [INFO] kwinject.out looks good.
+        for %%A in (kwinject.out) do if %%~zA==0 (
+          echo [ERROR] kwinject.out is empty.
+          exit /b 1
+        )
+        echo [INFO] kwinject.out OK.
+        endlocal
         '''
       }
     }
 
-    stage('Run kwbuildproject') {
+    stage('kwbuildproject') {
       steps {
         bat '''
+        @echo off
         if not exist "%KW_TOOLS%\\kwbuildproject.exe" (
-          echo [ERROR] kwbuildproject.exe not found at "%KW_TOOLS%".
+          echo [ERROR] kwbuildproject.exe not found: "%KW_TOOLS%"
           exit /b 1
         )
         rmdir /s /q kwtables 2>nul
         "%KW_TOOLS%\\kwbuildproject.exe" --tables-directory kwtables kwinject.out
-        set "RC=%ERRORLEVEL%"
-        if %RC% NEQ 0 (
-          echo [ERROR] kwbuildproject failed with code %RC%.
-          exit /b %RC%
+        if errorlevel 1 (
+          echo [ERROR] kwbuildproject failed.
+          exit /b 1
         )
         echo [INFO] kwtables generated.
         '''
       }
     }
 
-    stage('Run kwadmin (optional)') {
-      when { expression { return false } } // Enable and fill in server details if needed
+    stage('kwadmin upload (optional)') {
+      when { expression { return false } } // 使う場合は true にしてURL/Project設定
       steps {
         bat '''
+        @echo off
         if not exist "%KW_TOOLS%\\kwadmin.exe" (
-          echo [ERROR] kwadmin.exe not found at "%KW_TOOLS%".
+          echo [ERROR] kwadmin.exe not found: "%KW_TOOLS%"
           exit /b 1
         )
         set "KW_URL=http://<kwserver>:<port>"
@@ -143,7 +129,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'kwinject.out,kwtables/**,build.env', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'build.env,kwinject.out,kwtables/**', onlyIfSuccessful: false
     }
   }
 }
