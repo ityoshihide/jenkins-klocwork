@@ -1,25 +1,51 @@
 pipeline {
   agent any
-  options { skipDefaultCheckout(true) }
+  options { skipDefaultCheckout(true) } // 余計なSCMチェックアウトを無効化
+
+  environment {
+    KW_BIN   = 'C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin'
+    SLN      = 'C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2022\\4.sln'
+    MSBUILD  = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
+    KW_URL   = 'http://localhost:2520'
+    PROJECT  = 'sample'
+    CONFIG   = 'Debug'
+    PLATFORM = 'x64'
+  }
 
   stages {
-    stage('Klocwork run') {
+    stage('1) kwinject') {
       steps {
         bat '''
         @echo off
-        set "KW_BIN=C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin"
-        set "SLN=C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2019\\4.sln"
-        set "KW_URL=http://localhost:2520"
-        set "PROJECT=sample"
+        echo [kwinject] %SLN% (%CONFIG%|%PLATFORM%)
+        "%KW_BIN%\\kwinject.exe" -- ^
+          "%MSBUILD%" "%SLN%" /t:Rebuild /p:Configuration=%CONFIG% /p:Platform=%PLATFORM%
+        if errorlevel 1 exit /b 1
+        if not exist kwinject.out (echo [ERROR] kwinject.out missing & exit /b 1)
+        for %%A in (kwinject.out) do if %%~zA==0 (echo [ERROR] kwinject.out is empty & exit /b 1)
+        '''
+      }
+    }
 
-        echo [1/3] kwinject
-        "%KW_BIN%\\kwinject.exe" msbuild "%SLN%" /t:rebuild /p:configuration=debug || exit /b 1
+    stage('2) kwbuildproject') {
+      steps {
+        bat '''
+        @echo off
+        echo [kwbuildproject] -> tables
+        rmdir /s /q tables 2>nul
+        "%KW_BIN%\\kwbuildproject.exe" --url %KW_URL%/%PROJECT% -o tables kwinject.out -f
+        if errorlevel 1 exit /b 1
+        '''
+      }
+    }
 
-        echo [2/3] kwbuildproject
-        "%KW_BIN%\\kwbuildproject.exe" --url %KW_URL%/%PROJECT% -o tables kwinject.out -f || exit /b 1
-
-        echo [3/3] kwadmin load
-        "%KW_BIN%\\kwadmin.exe" --url %KW_URL% load %PROJECT% tables || exit /b 1
+    stage('3) kwadmin load') {
+      steps {
+        bat '''
+        @echo off
+        echo [kwadmin] load %PROJECT%
+        "%KW_BIN%\\kwadmin.exe" --url %KW_URL% load %PROJECT% tables
+        if errorlevel 1 exit /b 1
         '''
       }
     }
