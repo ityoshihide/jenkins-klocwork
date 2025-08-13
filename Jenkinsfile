@@ -2,56 +2,49 @@ pipeline {
   agent any
 
   environment {
-    // Klocworkツール一式（kwinject.exe / kwbuildproject.exe / kwadmin.exe）
+    // Klocworkツール（kwinject.exe / kwbuildproject.exe / kwadmin.exe）
     KW_TOOLS = 'C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin'
-    // .slnが入っているフォルダ（最初の *.sln を自動選択）
+    // .sln があるフォルダ（最初の *.sln を自動選択）
     SLN_DIR  = 'C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2022'
-    // PATHにKlocwork CLIを追加
+    // PATH に Klocwork CLI を追加
     PATH     = "${env.PATH};${env.KW_TOOLS}"
   }
 
   stages {
-    stage('Resolve MSBuild & .sln') {
+    stage('Resolve MSBuild & .sln (PowerShell)') {
       steps {
-        bat '''
-        @echo off
-        setlocal EnableExtensions EnableDelayedExpansion
+        powershell '''
+          $ErrorActionPreference = "Stop"
 
-        rem --- Resolve MSBuild ---
-        set "MSBUILD="
-        set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"
-        if exist "!VSWHERE!" (
-          for /f "usebackq delims=" %%A in (`"!VSWHERE!" -latest -requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\MSBuild.exe"`) do (
-            set "MSBUILD=%%~fA"
+          Write-Host "[INFO] Resolving MSBuild with vswhere / PATH ..."
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $msbuild = $null
+
+          if (Test-Path $vswhere) {
+            $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\\**\\Bin\\MSBuild.exe" | Select-Object -First 1
+          }
+          if (-not $msbuild) {
+            $cmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+            if ($cmd) { $msbuild = $cmd.Path }
+          }
+          if (-not $msbuild) {
+            throw "[ERROR] MSBuild.exe not found. Install VS Build Tools or add MSBuild to PATH."
+          }
+          Write-Host "[INFO] MSBuild: $msbuild"
+
+          Write-Host "[INFO] Finding .sln under: ${env:SLN_DIR}"
+          $sln = Get-ChildItem -LiteralPath ${env:SLN_DIR} -Filter *.sln -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $sln) {
+            throw "[ERROR] No .sln file found in '${env:SLN_DIR}'."
+          }
+          $solution = $sln.FullName
+          Write-Host "[INFO] Solution: $solution"
+
+          # export for later bat stages
+          Set-Content -Path "build.env" -Value @(
+            "MSBUILD=$msbuild"
+            "SOLUTION=$solution"
           )
-        )
-        if not defined MSBUILD (
-          for /f "delims=" %%A in ('where MSBuild.exe 2^>nul') do (
-            set "MSBUILD=%%~fA"
-            goto FOUND_MSBUILD
-          )
-          echo [ERROR] MSBuild.exe not found. Install VS Build Tools or add to PATH.
-          exit /b 1
-        )
-        :FOUND_MSBUILD
-        echo [INFO] MSBuild: !MSBUILD!
-
-        rem --- Pick first .sln under SLN_DIR ---
-        set "SOLUTION="
-        for /f "delims=" %%F in ('dir /b /a:-d "%SLN_DIR%\\*.sln" 2^>nul') do (
-          set "SOLUTION=%SLN_DIR%\\%%~F"
-          goto FOUND_SOLUTION
-        )
-        echo [ERROR] No .sln in "%SLN_DIR%".
-        exit /b 1
-        :FOUND_SOLUTION
-        echo [INFO] Solution: !SOLUTION!
-
-        rem --- Export for next stages ---
-        >  build.env echo MSBUILD=!MSBUILD!
-        >> build.env echo SOLUTION=!SOLUTION!
-
-        endlocal
         '''
       }
     }
@@ -60,9 +53,12 @@ pipeline {
       steps {
         bat '''
         @echo off
-        setlocal
         if not exist "%KW_TOOLS%\\kwinject.exe" (
           echo [ERROR] kwinject.exe not found: "%KW_TOOLS%"
+          exit /b 1
+        )
+        if not exist build.env (
+          echo [ERROR] build.env missing. Resolve stage didn't run?
           exit /b 1
         )
         call build.env
@@ -86,7 +82,6 @@ pipeline {
           exit /b 1
         )
         echo [INFO] kwinject.out OK.
-        endlocal
         '''
       }
     }
@@ -111,7 +106,7 @@ pipeline {
     }
 
     stage('kwadmin upload (optional)') {
-      when { expression { return false } } // 使う場合は true にしてURL/Project設定
+      when { expression { return false } } // 使うとき true にしてURL/Project設定
       steps {
         bat '''
         @echo off
