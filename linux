@@ -1,66 +1,57 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    KW_HOME = 'C:\\Klocwork\\kw' // Adjust to your actual installation path
-    PATH = "${env.PATH};${env.KW_HOME}\\bin"
-  }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout([$class: 'GitSCM',
-          branches: [[name: '*/main']],
-          userRemoteConfigs: [[
-            url: 'https://github.com/ityoshihide/jenkins-klocwork.git',
-            credentialsId: 'MyGithubCredentials'
-          ]]
-        ])
-      }
+    environment {
+        KW_PATH = "/opt/klocwork/kwbuildtools/bin"
     }
 
-    stage('Run kwinject') {
-      steps {
-        echo '[INFO] Running kwinject on Windows...'
-        bat '''
-        if not exist "%KW_HOME%\\bin\\kwinject.exe" (
-          echo ERROR: kwinject.exe not found & exit /b 1
-        )
-        rem --- Wrap your actual build command here ---
-        kwinject --output kwinject.out -- ^
-          msbuild YourSolution.sln /t:Rebuild /p:Configuration=Release
-        '''
-      }
-    }
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '[INFO] Checking out the repository...'
+                checkout scm
+            }
+        }
 
-    stage('Verify kwinject.out') {
-      steps {
-        bat '''
-        if not exist kwinject.out (
-          echo ERROR: kwinject.out not found & exit /b 1
-        )
-        for %%A in (kwinject.out) do if %%~zA==0 (
-          echo ERROR: kwinject.out is empty & exit /b 1
-        )
-        '''
-      }
-    }
+        stage('Run kwinject') {
+            steps {
+                echo '[INFO] Running kwinject with full path...'
+                sh '''
+                    ${KW_PATH}/kwinject make
+                '''
+            }
+        }
 
-    stage('Run kwbuildproject') {
-      steps {
-        bat '''
-        kwbuildproject --tables-directory kwtables kwinject.out
-        '''
-      }
-    }
+        stage('Verify kwinject.out') {
+            steps {
+                echo '[INFO] Verifying kwinject.out..'
+                sh '''
+                    if [ -f kwinject.out ]; then
+                        echo "[INFO] kwinject.out generated successfully."
+                    else
+                        echo "[ERROR] kwinject.out not found!"
+                        exit 1
+                    fi
+                '''
+            }
+        }
 
-    stage('Run kwadmin') {
-      when { expression { return false } } // Enable this stage if needed
-      steps {
-        bat '''
-        kwadmin --url http://<kwserver>:<port> load <project_name> kwtables
-        '''
-      }
+        stage('Run kwbuildproject') {
+            steps {
+                echo '[INFO] Running kwbuildproject...'
+                sh '''
+                    ${KW_PATH}/kwbuildproject --url http://192.50.110.196:2520/jenkins -o table kwinject.out -f
+                '''
+            }
+        }
+
+        stage('Run kwadmin') {
+            steps {
+                echo '[INFO] Loading project into Klocwork server using kwadmin...'
+                sh '''
+                    ${KW_PATH}/kwadmin --url http://192.50.110.196:2520 load jenkins table
+                '''
+            }
+        }
     }
-  }
 }
