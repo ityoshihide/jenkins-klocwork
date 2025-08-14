@@ -36,7 +36,7 @@ pipeline {
       }
     }
 
-    stage('3) kwadmin load') {
+    stage('3) kwadmin load　') {
       steps {
         bat '''
         @echo off
