@@ -40,7 +40,7 @@ pipeline {
       steps {
         bat '''
         @echo off
-        echo [kwadmin load]
+        echo [kwadmin load ]
         "%KW_BIN%\\kwadmin.exe" --url %KW_URL% load %PROJECT% tables
         if errorlevel 1 exit /b 1
         '''
