@@ -24,7 +24,7 @@ pipeline {
       }
     }
 
-    stage('2) kwbuildproject') {
+    stage('2) kwbuildproject ') {
       steps {
         bat '''
         @echo off
