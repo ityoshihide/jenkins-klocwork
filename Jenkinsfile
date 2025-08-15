@@ -11,7 +11,7 @@ pipeline {
   }
 
   stages {
-    stage('1) kwinject') {
+    stage('1) kwinject ') {
       steps {
         bat '''
         @echo off
