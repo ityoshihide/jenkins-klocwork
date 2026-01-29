@@ -20,7 +20,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@v2
       - name: kwinject
-        run: kwinject make
+        run: kwinject msbuild 4.sln /t:rebuild /p:configuration=debug
         shell: cmd
       - name: kwbuildproject
         run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out -f
