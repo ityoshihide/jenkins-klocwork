@@ -3,11 +3,11 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    KW_BIN  = 'C:\\Klocwork\\Validate_25.2\\kwbuildtools\\bin'
-    SLN     = 'C:\\Klocwork\\Command Line 25.2\\samples\\demosthenes\\vs2022\\4.sln'
+    KW_BIN  = 'C:\\Klocwork\\CommandLine25.4\\kwbuildtools\\bin'
+    SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
     MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
-    KW_URL  = 'http://localhost:2520'
-    PROJECT = 'sample'
+    KW_URL  = 'http://localhost:2540'
+    PROJECT = 'jenkins'
   }
 
   stages {
