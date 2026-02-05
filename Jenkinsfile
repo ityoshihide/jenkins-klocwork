@@ -7,7 +7,7 @@ pipeline {
     SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
     MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
     KW_URL  = 'http://localhost:2540'
-    PROJECT = 'jenkins'
+    PROJECT = 'demosthenes_actions_demo'
   }
 
   stages {
