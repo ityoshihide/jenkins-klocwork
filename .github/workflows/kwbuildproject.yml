@@ -22,7 +22,7 @@ jobs:
       - name: kwinject
         run: kwinject make
       - name: kwbuildproject
-        run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 192.168.137.1 -f
+        run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 192.168.137.1 --license-port 27000 -f
       - name: kwload
         run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
       - name: generate sarif file
