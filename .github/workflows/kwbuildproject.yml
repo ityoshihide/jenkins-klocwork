@@ -34,10 +34,3 @@ jobs:
       - name: Generate SARIF report
         run: python2 ${{ secrets.KWHOME }}/kwoutput.py -a api -f sarif --url ${{ secrets.KWSERVER }}/demosthenes_actions_demo
         continue-on-error: true
-      
-      - name: Upload SARIF to GitHub
-        if: hashFiles('kw.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: kw.sarif
-        continue-on-error: true
