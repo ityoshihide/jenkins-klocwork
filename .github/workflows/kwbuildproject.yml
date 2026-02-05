@@ -1,4 +1,5 @@
 name: Klocwork integration build analysis
+
 on:
   push:
     branches:
@@ -9,9 +10,9 @@ on:
         description: 'Run the Klocwork analysis manually'
         default: 'Manual Execution'
         required: true
-  
+
 jobs:
-  klocwork:
+  build:
     runs-on: [self-hosted, kwbuildtools]
     
     defaults:
@@ -19,19 +20,24 @@ jobs:
         shell: cmd
     
     steps:
-      - name: checkout
-        run: |
-          cd %GITHUB_WORKSPACE%
-          git pull origin main
+      - name: Checkout code
+        uses: actions/checkout@v3
       
-      - name: kwinject
-        run: kwinject make
+      - name: Klocwork integration analysis
+        uses: michael-baron/klocwork-integration-analysis-action@v03
+        with:
+          build-command: make
+          url: ${{ secrets.KWSERVER }}
+          project: demosthenes_actions_demo
+          capture-tool: kwinject
       
-      - name: kwbuildproject
-        run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out -f
+      - name: Generate SARIF report
+        run: python2 ${{ secrets.KWHOME }}/kwoutput.py -a api -f sarif --url ${{ secrets.KWSERVER }}/demosthenes_actions_demo
+        continue-on-error: true
       
-      - name: kwload
-        run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
-      
-      - name: generate sarif file
-        run: python2 ${{secrets.KWHOME}}/kwoutput.py -a api -f sarif --url ${{secrets.KWSERVER}}/demosthenes_actions_demo
+      - name: Upload SARIF to GitHub
+        if: hashFiles('kw.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: kw.sarif
+        continue-on-error: true
