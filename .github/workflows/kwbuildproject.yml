@@ -10,21 +10,26 @@ on:
         description: 'Run the Klocwork analysis manually'
         default: 'Manual Execution'
         required: true
-  
 
 jobs:
   klocwork:
     runs-on: [self-hosted, kwbuildtools]
-
+    
     steps:
-      - name: checkout
-        uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.1
+      
       - name: kwinject
         run: kwinject msbuild 4.sln /t:rebuild /p:configuration=debug
         shell: cmd
+      
       - name: kwbuildproject
         run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out -f
         shell: cmd
+      
       - name: kwload
         run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
         shell: cmd
