@@ -1,3 +1,3 @@
-# JenkinsのCICDパイプラインによるKlocworkの解析自動化
-udemyの講座を参考にしつつ、EC2インスタンス内にJenkinsを立てて、Githubでコミットされたタイミングで自動解析をかける.
+# Github ActionsによるKlocworkの解析自動化
+Githubでコミットされたタイミングで自動で統合ビルド解析をかける.
 
