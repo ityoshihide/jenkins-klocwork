@@ -15,18 +15,25 @@ jobs:
   build:
     runs-on: [self-hosted, kwbuildtools]
     
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
       - name: kwinject
         run: kwinject make
+
       - name: kwbuildproject
         run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 172.18.176.1 --license-port 27000 -f
+
+      - name: Set license host property
+        run: kwadmin --url ${{secrets.KWSERVER}} set-project-property demosthenes_actions_demo license.host 172.18.176.1
+
       - name: kwload
         run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
+
       - name: generate sarif file
         run: python2 ${{secrets.KWHOME}}/kwoutput.py -a api -f sarif --url ${{secrets.KWSERVER}}/demosthenes_actions_demo
+
       - name: upload sarif file
         if: hashFiles('kw.sarif') != ''
         uses: github/codeql-action/upload-sarif@v2
