@@ -34,7 +34,7 @@ jobs:
         run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
 
       - name: generate sarif file
-        run: /home/itou/klocwork/25.4/kwbuildtools/python3/python /home/itou/klocwork/25.4/kwbuildtools/python3/bin/kwoutput.py -a api -f sarif --url ${{secrets.KWSERVER}}/demosthenes_actions_demo
+        run: /home/itou/klocwork/25.4/kwbuildtools/python3/python /home/itou/klocwork/25.4/kwbuildtools/bin/kwoutput.py -a api -f sarif --url ${{secrets.KWSERVER}}/demosthenes_actions_demo
 
       - name: upload sarif file
         if: hashFiles('kw.sarif') != ''
