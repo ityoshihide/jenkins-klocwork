@@ -26,9 +26,11 @@ jobs:
      #   run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 172.18.176.1 --license-port 27000 -f
 
       - name: Set license host property
-        run: kwadmin --url ${{secrets.KWSERVER}} set-project-property demosthenes_actions_demo license.host 172.18.176.1
+        run: kwadmin --url ${{secrets.KWSERVER}} get-project-property demosthenes_actions_demo 
 
       - name: kwload
+        env:
+          RLM_LICENSE: 27000@172.18.176.1
         run: kwadmin --url ${{secrets.KWSERVER}} load demosthenes_actions_demo tables
 
       - name: generate sarif file
