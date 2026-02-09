@@ -26,7 +26,7 @@ jobs:
      #   run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 172.18.176.1 --license-port 27000 -f
 
       - name: Set license host property
-        run: kwadmin --url ${{secrets.KWSERVER}} get-project-property demosthenes_actions_demo 
+        run: kwadmin --url ${{secrets.KWSERVER}} get-project-properties demosthenes_actions_demo 
 
       - name: kwload
         env:
