@@ -11,13 +11,17 @@ on:
         default: 'Manual Execution'
         required: true
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   build:
     runs-on: [self-hosted, kwbuildtools]
-    
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: kwinject
         run: kwinject make
@@ -26,7 +30,7 @@ jobs:
         run: kwbuildproject --url ${{secrets.KWSERVER}}/demosthenes_actions_demo -o tables kwinject.out --license-host 172.18.176.1 --license-port 27000 -f
 
       - name: Set license host property
-        run: kwadmin --url ${{secrets.KWSERVER}} get-project-properties demosthenes_actions_demo 
+        run: kwadmin --url ${{secrets.KWSERVER}} get-project-properties demosthenes_actions_demo
 
       - name: kwload
         env:
@@ -38,6 +42,6 @@ jobs:
 
       - name: upload sarif file
         if: hashFiles('kw.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: kw.sarif
