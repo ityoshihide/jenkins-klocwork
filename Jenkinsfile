@@ -3,9 +3,16 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   stages {
+
+    stage('Checkout') {
+      steps {
+        // skipDefaultCheckout(true) のため必須
+        checkout scm
+      }
+    }
+
     stage('Klocwork (Plugin)') {
       steps {
-        // Klocworkサーバ設定（Manage Jenkins -> System の "Validateサーバー" を参照）
         klocworkWrapper(
           installConfig: '-- なし --',
           ltoken: '',
@@ -13,7 +20,8 @@ pipeline {
           serverProject: 'jenkins_demo'
         ) {
 
-          // （任意だけど安定）前回の解析テーブルを削除
+          // 毎回クリーン（前回の残骸対策）
+          bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
 
           // 1) kwinject 相当：ビルド情報キャプチャ
@@ -25,6 +33,10 @@ pipeline {
             tool: 'kwinject',
             workDir: ''
           ])
+
+          // ガード（空ファイル事故防止）
+          bat 'if not exist kwinject.out exit /b 1'
+          bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
           // 2) kwbuildproject 相当：解析実行（tables生成）
           klocworkIntegrationStep1([
@@ -43,6 +55,22 @@ pipeline {
             reportConfig: [displayChart: false],
             serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
           )
+
+          // 4) （任意）Jenkinsへ指摘情報を同期/反映（表示させたいならここ）
+          klocworkIssueSync([
+            additionalOpts: '',
+            dryRun: false,
+            lastSync: '03-00-0000 00:00:00',
+            projectRegexp: '',
+            statusAnalyze: true,
+            statusDefer: true,
+            statusFilter: true,
+            statusFix: true,
+            statusFixInLaterRelease: false,
+            statusFixInNextRelease: true,
+            statusIgnore: true,
+            statusNotAProblem: true
+          ])
         }
       }
     }
