@@ -56,7 +56,7 @@ pipeline {
             serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
           )
 
-          // 4)（任意）Sync
+          // 4)Sync
           klocworkIssueSync([
             additionalOpts: '',
             dryRun: false,
