@@ -1,37 +1,38 @@
 pipeline {
   agent any
-
-  options {
-    skipDefaultCheckout(true)
-    disableConcurrentBuilds()
-    timestamps()
-  }
+  options { skipDefaultCheckout(true) }
 
   environment {
-    // Jenkins管理画面で登録したKlocwork Server Configの「Name」と一致させる
+    // パスは「クォート無し」で持って、使うときに必ず " " で囲う
+    MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
+    SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
+
+    // ここは Jenkins の「Klocwork Server Config」の名前に合わせる
+    // 例：UIで作った設定名が "Validateサーバー" ならこれでOK
     KW_SERVER_CONFIG = 'Validateサーバー'
     KW_PROJECT       = 'jenkins_demo'
-    KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
 
-    // PDB対策用
-    VS_DEBUG_DIR = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\Debug'
+    KW_LTOKEN = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
   }
 
   stages {
-
     stage('Checkout') {
       steps {
+        // まず通常 checkout
         checkout scm
+
+        // shallow clone 等で HEAD~1 が無い問題を潰す（失敗しても続行）
+        bat '''
+          @echo on
+          git rev-parse --is-inside-work-tree
+          git fetch --tags --prune --progress
+          git fetch --unshallow || exit /b 0
+        '''
       }
     }
 
     stage('Klocwork Diff Analysis') {
       steps {
-
-        script {
-          env.KW_BUILD_NAME = "jenkins-${env.JOB_NAME}-${env.BUILD_NUMBER}"
-        }
-
         klocworkWrapper(
           installConfig: '-- なし --',
           ltoken: "${env.KW_LTOKEN}",
@@ -39,42 +40,48 @@ pipeline {
           serverProject: "${env.KW_PROJECT}"
         ) {
 
-          // =====================
-          // Clean
-          // =====================
-          bat 'cmd /c if exist kwinject.out del /f /q kwinject.out'
-          bat 'cmd /c if exist kwtables rmdir /s /q kwtables'
-          bat 'cmd /c if exist diff_file_list.txt del /f /q diff_file_list.txt'
+          // 毎回クリーン
+          bat 'if exist kwinject.out del /f /q kwinject.out'
+          bat 'if exist kwtables rmdir /s /q kwtables'
+          bat 'if exist diff_file_list.txt del /f /q diff_file_list.txt'
 
-          // Debugフォルダ削除（失敗しても落とさない）
-          bat 'cmd /c (if exist "%VS_DEBUG_DIR%" rmdir /s /q "%VS_DEBUG_DIR%") >nul 2>nul & exit /b 0'
+          // 差分ファイル一覧を作成（重要：ちゃんと > diff_file_list.txt する）
+          // HEAD~1 が無い場合は空ファイルにする
+          bat '''
+            @echo on
+            git rev-parse --verify HEAD >nul 2>nul || (echo [ERROR] HEAD not found & exit /b 1)
+            git rev-parse --verify HEAD~1 >nul 2>nul && (
+              git diff --name-only HEAD~1 HEAD > diff_file_list.txt
+            ) || (
+              type nul > diff_file_list.txt
+            )
+          '''
 
-          // =====================
-          // Diff file list 作成
-          // =====================
-          bat 'cmd /c (git rev-parse --verify HEAD>nul 2>nul && git rev-parse --verify HEAD~1>nul 2>nul && git diff --name-only HEAD~1 HEAD > diff_file_list.txt) >nul 2>nul & (if not exist diff_file_list.txt type nul > diff_file_list.txt) & exit /b 0'
+          // diff_file_list.txt の中身をコンソールに表示（確認用）
+          bat '''
+            @echo on
+            echo ===== diff_file_list.txt =====
+            if exist diff_file_list.txt type diff_file_list.txt
+            for %%A in (diff_file_list.txt) do @echo [INFO] diff_file_list.txt bytes=%%~zA
+            echo =============================
+          '''
 
-          bat 'cmd /c for %%A in (diff_file_list.txt) do @if %%~zA==0 echo [WARN] diff_file_list.txt is empty. Diff Analysis may show nothing.'
-
-          // =====================
-          // 1) BuildSpec生成（★完全固定パス＋ダブルクォート）
-          // =====================
+          // 1) kwinject（"C:\Program" is not executable 対策：必ず二重引用符）
           klocworkBuildSpecGeneration([
             additionalOpts: '',
-            buildCommand: "\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe\" \"C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln\" /t:Rebuild",
+            buildCommand: "\"${env.MSBUILD}\" \"${env.SLN}\" /t:Rebuild",
             ignoreErrors: false,
             output: 'kwinject.out',
             tool: 'kwinject',
             workDir: ''
           ])
 
-          // Guard
-          bat 'cmd /c if not exist kwinject.out exit /b 1'
-          bat 'cmd /c for %%A in (kwinject.out) do @if %%~zA==0 exit /b 1'
+          // ガード（空ファイル事故防止）
+          bat 'if not exist kwinject.out exit /b 1'
+          bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
-          // =====================
-          // 2) Diff Analysis（Jenkins UI表示部分）
-          // =====================
+          // 2) 差分解析（Diff Analysis）
+          // ※パラメータ名はあなたが使っていた "differentialAnalysisConfig" に合わせてます
           klocworkIncremental([
             additionalOpts: '',
             buildSpec: 'kwinject.out',
@@ -82,17 +89,18 @@ pipeline {
             differentialAnalysisConfig: [
               diffFileList: 'diff_file_list.txt',
               diffType: 'git',
+              // ここが空だとプラグイン側で解釈が揺れることがあるので明示推奨
               gitPreviousCommit: 'HEAD~1'
             ],
-            incrementalAnalysis: false,
+            // Diff Analysis を動かしたいなら通常 true の方が意図に合います
+            incrementalAnalysis: true,
             projectDir: '',
             reportFile: ''
           ])
 
-          script {
-            currentBuild.description =
-              "Klocwork Diff: project=${env.KW_PROJECT} / build=${env.KW_BUILD_NAME}"
-          }
+          // 必要ならゲートや同期もここに追加
+          // klocworkQualityGateway([...])
+          // klocworkIssueSync([...])
         }
       }
     }
