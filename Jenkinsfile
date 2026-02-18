@@ -6,7 +6,6 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        // skipDefaultCheckout(true) のため必須
         checkout scm
       }
     }
@@ -15,16 +14,17 @@ pipeline {
       steps {
         klocworkWrapper(
           installConfig: '-- なし --',
-          ltoken: '',
+          // ★ここを明示：本来の場所（あなたが提示したパス）
+          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\credentials',
           serverConfig: 'Validateサーバー',
           serverProject: 'jenkins_demo'
         ) {
 
-          // 毎回クリーン（前回の残骸対策）
+          // 毎回クリーン
           bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
 
-          // 1) kwinject 相当：ビルド情報キャプチャ
+          // 1) kwinject 相当
           klocworkBuildSpecGeneration([
             additionalOpts: '',
             buildCommand: '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe" "C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln" /t:Rebuild',
@@ -38,7 +38,7 @@ pipeline {
           bat 'if not exist kwinject.out exit /b 1'
           bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
-          // 2) kwbuildproject 相当：解析実行（tables生成）
+          // 2) 解析（tables生成）
           klocworkIntegrationStep1([
             additionalOpts: '',
             buildSpec: 'kwinject.out',
@@ -50,13 +50,13 @@ pipeline {
             tablesDir: 'kwtables'
           ])
 
-          // 3) kwadmin load 相当：結果をValidateへロード
+          // 3) Load
           klocworkIntegrationStep2(
             reportConfig: [displayChart: false],
             serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
           )
 
-          // 4) （任意）Jenkinsへ指摘情報を同期/反映（表示させたいならここ）
+          // 4)（任意）Sync
           klocworkIssueSync([
             additionalOpts: '',
             dryRun: false,
