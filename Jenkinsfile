@@ -15,7 +15,7 @@ pipeline {
         klocworkWrapper(
           installConfig: '-- なし --',
           // ★ここを明示：本来の場所（あなたが提示したパス）
-          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\credentials',
+          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\ltoken',
           serverConfig: 'Validateサーバー',
           serverProject: 'jenkins_demo'
         ) {
