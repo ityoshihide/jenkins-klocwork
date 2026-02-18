@@ -3,37 +3,51 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    KW_BASE_URL = 'http://192.168.137.1:2540'
-    KW_PROJECT  = 'jenkins_demo'
+    // Klocwork Jenkins設定（Jenkins側の「Validateサーバー」設定名に合わせる）
+    KW_SERVER_CONFIG = 'Validateサーバー'
+    KW_PROJECT       = 'jenkins_demo'
+
+    // ltoken（Jenkins実行ユーザーから参照できること）
+    KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
   }
 
   stages {
-
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-    stage('Klocwork (Plugin)') {
+    stage('Klocwork Diff Analysis') {
       steps {
         script {
-          // Klocwork側の build_name を毎回変える（例: jenkins-klocwork-pipeline-20）
+          // Klocwork側の build 名を毎回一意に（例: jenkins-klocwork-pipeline-23）
           env.KW_BUILD_NAME = "jenkins-${env.JOB_NAME}-${env.BUILD_NUMBER}"
         }
 
         klocworkWrapper(
           installConfig: '-- なし --',
-          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\ltoken',
-          serverConfig: 'Validateサーバー',
+          ltoken: "${env.KW_LTOKEN}",
+          serverConfig: "${env.KW_SERVER_CONFIG}",
           serverProject: "${env.KW_PROJECT}"
         ) {
 
-          // 毎回クリーン
+          // クリーン
           bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
+          bat 'if exist diff_file_list.txt del /f /q diff_file_list.txt'
 
-          // 1) kwinject 相当
+          // 0) 差分ファイルリスト生成（Gitの差分対象だけ）
+          // ※ checkout scm 済み前提。Git for Windows がPATHにあること
+          bat '''
+            @echo off
+            git diff --name-only HEAD~1 HEAD > diff_file_list.txt
+            for %%A in (diff_file_list.txt) do if %%~zA==0 (
+              echo [WARN] diff_file_list.txt is empty. Fallback to full analysis.
+            )
+          '''
+
+          // 1) BuildSpec 生成（あなたが提示した buildCommand を “壊れていない形” に修正済み）
           klocworkBuildSpecGeneration([
             additionalOpts: '',
             buildCommand: '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe" "C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln" /t:Rebuild',
@@ -47,46 +61,27 @@ pipeline {
           bat 'if not exist kwinject.out exit /b 1'
           bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
-          // 2) 解析（tables生成）
-          klocworkIntegrationStep1([
+          // 2) 差分解析（Diff Analysis）
+          //    - differentialAnalysisConfig が “差分解析の肝”
+          //    - gitPreviousCommit は HEAD~1 を基本に
+          klocworkIncremental([
             additionalOpts: '',
             buildSpec: 'kwinject.out',
-            disableKwdeploy: false,
-            duplicateFrom: '',
-            ignoreCompileErrors: true,
-            importConfig: '',
+            cleanupProject: false,
+            differentialAnalysisConfig: [
+              diffFileList: 'diff_file_list.txt',
+              diffType: 'git',
+              gitPreviousCommit: 'HEAD~1'
+            ],
             incrementalAnalysis: false,
-            tablesDir: 'kwtables'
+            projectDir: '',
+            reportFile: ''
           ])
 
-          // 3) Load（buildName を明示）
-          klocworkIntegrationStep2(
-            reportConfig: [displayChart: true],
-            serverConfig: [additionalOpts: '', buildName: "${env.KW_BUILD_NAME}", tablesDir: 'kwtables']
-          )
-
-          // Jenkinsのビルド画面（説明欄）にKlocwork結果への導線を表示（Syncより前に実行）
+          // Jenkinsのビルド説明欄に導線（任意）
           script {
-            def projectUrl = "${env.KW_BASE_URL}/${env.KW_PROJECT}"
-            currentBuild.description =
-              "Klocwork: <a href='${projectUrl}'>${env.KW_PROJECT}</a> / build=${env.KW_BUILD_NAME}"
+            currentBuild.description = "Klocwork Diff: project=${env.KW_PROJECT} / build=${env.KW_BUILD_NAME}"
           }
-
-          // 4) Sync（最後）
-          klocworkIssueSync([
-            additionalOpts: '',
-            dryRun: false,
-            lastSync: '03-00-0000 00:00:00',
-            projectRegexp: '',
-            statusAnalyze: true,
-            statusDefer: true,
-            statusFilter: true,
-            statusFix: true,
-            statusFixInLaterRelease: false,
-            statusFixInNextRelease: true,
-            statusIgnore: true,
-            statusNotAProblem: true
-          ])
         }
       }
     }
@@ -94,8 +89,7 @@ pipeline {
 
   post {
     always {
-      // 成果物保存
-      archiveArtifacts artifacts: 'kwinject.out,kwtables/**', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'kwinject.out,diff_file_list.txt,kwtables/**', onlyIfSuccessful: false
     }
   }
 }
