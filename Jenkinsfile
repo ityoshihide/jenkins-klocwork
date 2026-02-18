@@ -8,17 +8,17 @@ pipeline {
   }
 
   environment {
+    // Jenkins管理画面で登録したKlocwork Server Configの「Name」と一致させる
     KW_SERVER_CONFIG = 'Validateサーバー'
     KW_PROJECT       = 'jenkins_demo'
     KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
 
-    MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
-    SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
-
+    // PDB対策用
     VS_DEBUG_DIR = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\Debug'
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
@@ -27,6 +27,7 @@ pipeline {
 
     stage('Klocwork Diff Analysis') {
       steps {
+
         script {
           env.KW_BUILD_NAME = "jenkins-${env.JOB_NAME}-${env.BUILD_NUMBER}"
         }
@@ -38,20 +39,29 @@ pipeline {
           serverProject: "${env.KW_PROJECT}"
         ) {
 
+          // =====================
           // Clean
+          // =====================
           bat 'cmd /c if exist kwinject.out del /f /q kwinject.out'
           bat 'cmd /c if exist kwtables rmdir /s /q kwtables'
           bat 'cmd /c if exist diff_file_list.txt del /f /q diff_file_list.txt'
+
+          // Debugフォルダ削除（失敗しても落とさない）
           bat 'cmd /c (if exist "%VS_DEBUG_DIR%" rmdir /s /q "%VS_DEBUG_DIR%") >nul 2>nul & exit /b 0'
 
-          // Diff file list (必ずファイル作成)
+          // =====================
+          // Diff file list 作成
+          // =====================
           bat 'cmd /c (git rev-parse --verify HEAD>nul 2>nul && git rev-parse --verify HEAD~1>nul 2>nul && git diff --name-only HEAD~1 HEAD > diff_file_list.txt) >nul 2>nul & (if not exist diff_file_list.txt type nul > diff_file_list.txt) & exit /b 0'
+
           bat 'cmd /c for %%A in (diff_file_list.txt) do @if %%~zA==0 echo [WARN] diff_file_list.txt is empty. Diff Analysis may show nothing.'
 
-          // 1) BuildSpec generation (★ここが今回の本丸修正：MSBUILD/SLNを必ずクォート)
+          // =====================
+          // 1) BuildSpec生成（★完全固定パス＋ダブルクォート）
+          // =====================
           klocworkBuildSpecGeneration([
             additionalOpts: '',
-            buildCommand: "\"%MSBUILD%\" \"%SLN%\" /t:Rebuild",
+            buildCommand: "\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe\" \"C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln\" /t:Rebuild",
             ignoreErrors: false,
             output: 'kwinject.out',
             tool: 'kwinject',
@@ -62,7 +72,9 @@ pipeline {
           bat 'cmd /c if not exist kwinject.out exit /b 1'
           bat 'cmd /c for %%A in (kwinject.out) do @if %%~zA==0 exit /b 1'
 
-          // 2) Diff Analysis
+          // =====================
+          // 2) Diff Analysis（Jenkins UI表示部分）
+          // =====================
           klocworkIncremental([
             additionalOpts: '',
             buildSpec: 'kwinject.out',
@@ -78,7 +90,8 @@ pipeline {
           ])
 
           script {
-            currentBuild.description = "Klocwork Diff: project=${env.KW_PROJECT} / build=${env.KW_BUILD_NAME}"
+            currentBuild.description =
+              "Klocwork Diff: project=${env.KW_PROJECT} / build=${env.KW_BUILD_NAME}"
           }
         }
       }
