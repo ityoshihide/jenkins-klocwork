@@ -2,55 +2,55 @@ pipeline {
   agent any
   options { skipDefaultCheckout(true) }
 
-  environment {
-    KW_BIN  = 'C:\\Klocwork\\CommandLine25.4\\kwbuildtools\\bin'
-    SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
-    MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
-    KW_URL  = 'http://localhost:2540'
-    PROJECT = 'jenkins_demo'
-  }
-
   stages {
-    stage('1) kwinject ') {
+    stage('Klocwork (Plugin)') {
       steps {
-        bat '''
-        @echo off
-        echo [kwinject] %SLN%
-        "%KW_BIN%\\kwinject.exe" -- "%MSBUILD%" "%SLN%" /t:Rebuild
-        if errorlevel 1 exit /b 1
-        if not exist kwinject.out (echo [ERROR] kwinject.out missing & exit /b 1)
-        for %%A in (kwinject.out) do if %%~zA==0 (echo [ERROR] kwinject.out is empty & exit /b 1)
-        '''
-      }
-    }
+        // Klocworkサーバ設定（Manage Jenkins -> System の "Validateサーバー" を参照）
+        klocworkWrapper(
+          installConfig: '-- なし --',
+          ltoken: '',
+          serverConfig: 'Validateサーバー',
+          serverProject: 'jenkins_demo'
+        ) {
 
-    stage('2) kwbuildproject ') {
-      steps {
-        bat '''
-        @echo off
-        echo [kwbuildproject]
-        rmdir /s /q tables 2>nul
-        "%KW_BIN%\\kwbuildproject.exe" --url %KW_URL%/%PROJECT% -o tables kwinject.out -f
-        if errorlevel 1 exit /b 1
-        '''
-      }
-    }
+          // （任意だけど安定）前回の解析テーブルを削除
+          bat 'if exist kwtables rmdir /s /q kwtables'
 
-    stage('3) kwadmin load') {
-      steps {
-        bat '''
-        @echo off
-        echo [kwadmin load ]
-        "%KW_BIN%\\kwadmin.exe" --url %KW_URL% load %PROJECT% tables
-        if errorlevel 1 exit /b 1
-        '''
+          // 1) kwinject 相当：ビルド情報キャプチャ
+          klocworkBuildSpecGeneration([
+            additionalOpts: '',
+            buildCommand: '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe" "C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln" /t:Rebuild',
+            ignoreErrors: false,
+            output: 'kwinject.out',
+            tool: 'kwinject',
+            workDir: ''
+          ])
+
+          // 2) kwbuildproject 相当：解析実行（tables生成）
+          klocworkIntegrationStep1([
+            additionalOpts: '',
+            buildSpec: 'kwinject.out',
+            disableKwdeploy: false,
+            duplicateFrom: '',
+            ignoreCompileErrors: true,
+            importConfig: '',
+            incrementalAnalysis: false,
+            tablesDir: 'kwtables'
+          ])
+
+          // 3) kwadmin load 相当：結果をValidateへロード
+          klocworkIntegrationStep2(
+            reportConfig: [displayChart: false],
+            serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
+          )
+        }
       }
     }
   }
 
   post {
     always {
-      archiveArtifacts artifacts: 'kwinject.out,tables/**', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'kwinject.out,kwtables/**', onlyIfSuccessful: false
     }
   }
 }
