@@ -22,6 +22,9 @@ pipeline {
     // Warnings NG に渡す
     KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
+
+    // kwcheck create 用（必要なら調整）
+    KW_SERVER_URL = 'http://192.168.137.1:2540'
   }
 
   stages {
@@ -47,7 +50,37 @@ pipeline {
       }
     }
 
-    // ★追加：クリーンビルド（.kwlp/.kwpsは触らない）
+    // ★追加：.kwlp/.kwps が無ければ kwcheck create（あれば何もしない）
+    stage('Ensure Klocwork Local Project') {
+      steps {
+        script {
+          def kwlpProps = "${env.WORKSPACE}\\.kwlp\\kwlp.properties"
+          def kwpsDir   = "${env.WORKSPACE}\\.kwps"
+
+          def kwlpOk = fileExists(kwlpProps)
+          def kwpsOk = fileExists(kwpsDir)
+
+          if (!kwlpOk || !kwpsOk) {
+            echo "[INFO] .kwlp/.kwps not found (or incomplete). Running kwcheck create..."
+
+            bat """
+              @echo off
+              cd /d "%WORKSPACE%"
+
+              echo [INFO] kwcheck version
+              kwcheck --version
+
+              echo [INFO] kwcheck create --url %KW_SERVER_URL% --project %KW_SERVER_PROJECT%
+              kwcheck create --url %KW_SERVER_URL% --project %KW_SERVER_PROJECT%
+            """
+          } else {
+            echo "[INFO] .kwlp/.kwps already exist. Skipping kwcheck create."
+          }
+        }
+      }
+    }
+
+    // ★追加：クリーンビルド（生成物だけ消す）
     stage('Clean build outputs (force rebuild)') {
       steps {
         bat """
@@ -55,7 +88,7 @@ pipeline {
           cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
 
           echo [INFO] Clean build outputs to avoid 'Nothing to be done'
-          rem プロジェクトに合わせて “生成物だけ” 消す（.kwlp/.kwpsは絶対触らない）
+          rem プロジェクトに合わせて “生成物だけ” 消す
           if exist out (
             del /q out\\*.o 2>nul
             del /q out\\*.obj 2>nul
