@@ -65,19 +65,19 @@ pipeline {
 
                 if /I "!ext!"==".c" (
                   set "p=!p:/=\\!"
-                  echo ..\\!p!>> diff_file_list.txt
+                  echo !p!>> diff_file_list.txt
                 )
                 if /I "!ext!"==".cc" (
                   set "p=!p:/=\\!"
-                  echo ..\\!p!>> diff_file_list.txt
+                  echo !p!>> diff_file_list.txt
                 )
                 if /I "!ext!"==".cpp" (
                   set "p=!p:/=\\!"
-                  echo ..\\!p!>> diff_file_list.txt
+                  echo !p!>> diff_file_list.txt
                 )
                 if /I "!ext!"==".cxx" (
                   set "p=!p:/=\\!"
-                  echo ..\\!p!>> diff_file_list.txt
+                  echo !p!>> diff_file_list.txt
                 )
               )
             )
