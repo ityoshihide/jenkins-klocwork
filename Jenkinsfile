@@ -3,10 +3,9 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
-    // ★GitHub上のコード（WORKSPACE）をビルドしてbuild infoを作る前提に変更
-    //   ※現状 repo に vs2022\\4.sln が無いなら、まず repo に追加してください（このJenkinsfileはそれを前提にします）
-    SLN     = '%WORKSPACE%\\vs2022\\4.sln'
+    // Makefile を使って build spec を生成する
+    // ※ Windows エージェントで `make` が実行できる必要があります（例: MSYS2 / MinGW / Cygwin など）
+    MAKE = 'make'
 
     KW_SERVER_CONFIG = 'Validateサーバー'
     KW_PROJECT       = 'jenkins_demo'
@@ -44,12 +43,14 @@ pipeline {
             if exist diff_file_list.txt del /f /q diff_file_list.txt
           '''
 
-          // ★WORKSPACE側の .sln が無いと差分解析は成立しない（build info が作れない）ので早期エラー
+          // Makefile の存在チェック（GitHub上のコードを対象にする）
           bat '''
-            if not exist "%SLN%" (
-              echo [ERROR] Solution file not found: "%SLN%"
-              echo [ERROR] GitHub上のコードをCIで差分解析するには、repo内に .sln/.vcxproj 等のビルド定義が必要です。
-              echo [ERROR] 例: repo 直下に vs2022\\4.sln を追加してから再実行してください。
+            if not exist "Makefile" (
+              echo [ERROR] Makefile not found in WORKSPACE: "%WORKSPACE%"
+              exit /b 1
+            )
+            where %MAKE% >nul 2>nul || (
+              echo [ERROR] make command not found. Please install make (e.g., MSYS2/MinGW/Cygwin) and add it to PATH.
               exit /b 1
             )
           '''
@@ -66,7 +67,6 @@ pipeline {
           '''
 
           // C/C++ のみ抽出（goto無し・ラベル無し）
-          // ★WORKSPACE直下相対にする（..\\ を付けない）
           bat '''
             setlocal EnableDelayedExpansion
             type nul > diff_file_list.txt
@@ -105,7 +105,7 @@ pipeline {
             if exist diff_file_list.txt type diff_file_list.txt
           '''
 
-          // ★差分がC/C++ 0件なら解析スキップ（無駄にkwciagentで落とさない）
+          // 差分がC/C++ 0件なら解析スキップ
           bat '''
             for %%A in (diff_file_list.txt) do set "SZ=%%~zA"
             if not defined SZ set "SZ=0"
@@ -115,9 +115,10 @@ pipeline {
             )
           '''
 
-          // ビルドスペック生成（WORKSPACE側の .sln をビルドして build info を作る）
+          // ビルドスペック生成（GitHubのWORKSPACE上の Makefile を使う）
+          // -B: 常に再ビルド（compile を確実に発生させて build info を作る）
           klocworkBuildSpecGeneration([
-            buildCommand: "\"${env.MSBUILD}\" \"${env.SLN}\" /t:Rebuild",
+            buildCommand: "\"${env.MAKE}\" -B",
             output: 'kwinject.out',
             tool: 'kwinject'
           ])
@@ -130,7 +131,7 @@ pipeline {
 
           // kwciagent run（workspace直下で実行）
           bat '''
-            kwciagent set --project-dir "%WORKSPACE%\\.kwlp" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=%KW_PROJECT%
+            kwciagent set --project-dir "%WORKSPACE%\\.kwlp" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=jenkins_demo
 
             kwciagent run ^
               --project-dir "%WORKSPACE%\\.kwlp" ^
