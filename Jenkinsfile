@@ -1,11 +1,14 @@
 pipeline {
   agent any
-  triggers { githubPush() }
+  options { skipDefaultCheckout(true) }
 
-  options {
-    skipDefaultCheckout(true)
-    timestamps()
-  }
+  stages {
+
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
 
     stage('Klocwork (Plugin)') {
       steps {
@@ -71,11 +74,117 @@ pipeline {
         }
       }
     }
+
+    stage('Export issues JSON -> SARIF (Warnings NG)') {
+      steps {
+        bat """
+          @echo off
+          echo [INFO] Export Klocwork issues to kw_issues.json
+          kwciagent list --system --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%WORKSPACE%\\kw_issues.json"
+          echo [INFO] JSON size:
+          for %%A in ("%WORKSPACE%\\kw_issues.json") do echo %%~zA bytes
+        """
+
+        powershell '''
+          $jsonPath  = Join-Path $env:WORKSPACE 'kw_issues.json'
+          $sarifPath = Join-Path $env:WORKSPACE 'kw_issues.sarif'
+
+          function Write-EmptySarif($path) {
+            $emptyObj = @{
+              '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
+              version='2.1.0'
+              runs=@(@{ tool=@{ driver=@{ name='Klocwork'; rules=@() } }; results=@() })
+            }
+            $emptyObj | ConvertTo-Json -Depth 20 | Set-Content -Path $path -Encoding UTF8
+          }
+
+          if (!(Test-Path $jsonPath)) { Write-Host "[WARN] JSON not found: $jsonPath"; Write-EmptySarif $sarifPath; exit 0 }
+
+          $raw = Get-Content -Path $jsonPath -Raw
+          if ([string]::IsNullOrWhiteSpace($raw)) { Write-Host "[WARN] JSON empty"; Write-EmptySarif $sarifPath; exit 0 }
+
+          try { $obj = $raw | ConvertFrom-Json } catch {
+            Write-Host "[ERROR] ConvertFrom-Json failed. Dump first 500 chars:"
+            Write-Host ($raw.Substring(0, [Math]::Min(500, $raw.Length)))
+            Write-EmptySarif $sarifPath
+            exit 0
+          }
+
+          $issues = $null
+          if ($obj -is [System.Array]) { $issues = $obj }
+          elseif ($obj.issues) { $issues = $obj.issues }
+          elseif ($obj.results) { $issues = $obj.results }
+          elseif ($obj.items) { $issues = $obj.items }
+
+          if ($null -eq $issues) {
+            Write-Host "[WARN] Could not find issues array in JSON. Keys:"
+            $obj.PSObject.Properties.Name | ForEach-Object { Write-Host " - $_" }
+            Write-EmptySarif $sarifPath
+            exit 0
+          }
+
+          $results = New-Object System.Collections.Generic.List[Object]
+
+          foreach ($it in $issues) {
+            $file = $null
+            foreach ($k in @('file','path','filename','sourceFile','source_file')) { if ($it.$k) { $file = [string]$it.$k; break } }
+            if ([string]::IsNullOrWhiteSpace($file)) { $file = 'unknown' }
+
+            $rule = $null
+            foreach ($k in @('code','checker','rule','ruleId','id')) { if ($it.$k) { $rule = [string]$it.$k; break } }
+            if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
+
+            $msg = $null
+            foreach ($k in @('message','msg','description','text')) { if ($it.$k) { $msg = [string]$it.$k; break } }
+            if ([string]::IsNullOrWhiteSpace($msg)) { $msg = '' }
+
+            $line = 1
+            foreach ($k in @('line','lineNumber','line_number','startLine')) {
+              if ($it.$k) { $tmp = 0; if ([int]::TryParse([string]$it.$k, [ref]$tmp) -and $tmp -gt 0) { $line = $tmp }; break }
+            }
+
+            $results.Add(@{
+              ruleId  = $rule
+              message = @{ text = $msg }
+              locations = @(@{
+                physicalLocation = @{
+                  artifactLocation = @{ uri = $file }
+                  region = @{ startLine = $line }
+                }
+              })
+            })
+          }
+
+          $sarifObj = @{
+            '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
+            version='2.1.0'
+            runs=@(@{
+              tool=@{ driver=@{ name='Klocwork'; rules=@() } }
+              results=$results
+            })
+          }
+
+          $sarifObj | ConvertTo-Json -Depth 20 | Set-Content -Path $sarifPath -Encoding UTF8
+          Write-Host "[INFO] Wrote SARIF: $sarifPath"
+          Write-Host ("[INFO] SARIF results: {0}" -f $results.Count)
+        '''
+      }
+    }
+
+    stage('Show issues as table in Jenkins (Warnings NG)') {
+      steps {
+        recordIssues(
+          enabledForFailure: true,
+          tools: [sarif(pattern: "kw_issues.sarif")]
+        )
+      }
+    }
   }
 
   post {
     always {
       archiveArtifacts artifacts: 'kwinject.out,kwtables/**', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'kw_issues.json,kw_issues.sarif', allowEmptyArchive: true
     }
   }
 }
