@@ -71,7 +71,7 @@ pipeline {
               kwcheck --version
 
               echo [INFO] kwcheck create --url %KW_SERVER_URL% --project %KW_SERVER_PROJECT%
-              kwcheck create --url %KW_SERVER_URL% --project %KW_SERVER_PROJECT%
+              kwcheck create
             """
           } else {
             echo "[INFO] .kwlp/.kwps already exist. Skipping kwcheck create."
