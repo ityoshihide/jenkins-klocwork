@@ -21,11 +21,6 @@ pipeline {
     // Warnings NG に渡す
     KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
-
-    // HTMLレポート
-    KW_REPORT_DIR   = 'kw_report'
-    KW_SEV_PIE_HTML = 'severity_pie.html'
-    KW_HISTORY_HTML = 'history_bar.html'
   }
 
   stages {
@@ -237,211 +232,12 @@ pipeline {
       }
     }
 
-    // ★追加：severityCode 円グラフ + History 棒グラフ(自作) を生成
-    stage('Generate Charts (severity pie + history bar)') {
-      steps {
-        powershell '''
-          $ws = $env:WORKSPACE
-          $jsonPath = Join-Path $ws $env:KW_ISSUES_JSON
-
-          $reportDir = Join-Path $ws $env:KW_REPORT_DIR
-          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-
-          if (!(Test-Path $jsonPath)) {
-            Write-Host "[WARN] kw_issues.json not found. Skip chart generation."
-            exit 0
-          }
-
-          $raw = Get-Content -Path $jsonPath -Raw
-          if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Host "[WARN] kw_issues.json is empty. Skip chart generation."
-            exit 0
-          }
-
-          try { $obj = $raw | ConvertFrom-Json } catch {
-            Write-Host "[WARN] JSON parse failed. Skip chart generation."
-            exit 0
-          }
-
-          $issues = $null
-          if ($obj -is [System.Array]) { $issues = $obj }
-          elseif ($obj.issues) { $issues = $obj.issues }
-          elseif ($obj.results) { $issues = $obj.results }
-          elseif ($obj.items) { $issues = $obj.items }
-
-          if ($null -eq $issues) {
-            Write-Host "[WARN] Could not locate issues array. Skip chart generation."
-            exit 0
-          }
-
-          # ---------- severityCode 集計 ----------
-          $sevCounts = @{}
-          foreach ($it in $issues) {
-            $sev = $null
-            foreach ($k in @('severityCode','severity_code','severity')) { if ($it.$k) { $sev = [string]$it.$k; break } }
-            if ([string]::IsNullOrWhiteSpace($sev)) { $sev = 'UNKNOWN' }
-
-            if (-not $sevCounts.ContainsKey($sev)) { $sevCounts[$sev] = 0 }
-            $sevCounts[$sev]++
-          }
-
-          $labels = @($sevCounts.Keys | Sort-Object)
-          $values = @($labels | ForEach-Object { [int]$sevCounts[$_] })
-
-          # ---------- History(棒) 用：ビルド番号と total を蓄積 ----------
-          $total = ($values | Measure-Object -Sum).Sum
-          $buildNo = $env:BUILD_NUMBER
-
-          $historyJsonPath = Join-Path $reportDir "history.json"
-          $history = @()
-
-          if (Test-Path $historyJsonPath) {
-            try {
-              $history = (Get-Content $historyJsonPath -Raw | ConvertFrom-Json)
-              if ($null -eq $history) { $history = @() }
-              if ($history -isnot [System.Array]) { $history = @($history) }
-            } catch { $history = @() }
-          }
-
-          # 同一ビルド番号があれば置換
-          $history = @($history | Where-Object { $_.build -ne [int]$buildNo })
-          $history += [pscustomobject]@{ build = [int]$buildNo; total = [int]$total }
-          $history = @($history | Sort-Object build)
-
-          $history | ConvertTo-Json -Depth 5 | Set-Content -Path $historyJsonPath -Encoding UTF8
-
-          # ---------- HTML生成（Chart.js CDN）----------
-          $chartJs = "https://cdn.jsdelivr.net/npm/chart.js"
-
-          # severity pie
-          $pieHtmlPath = Join-Path $reportDir $env:KW_SEV_PIE_HTML
-          $pieLabelsJson = ($labels | ConvertTo-Json -Compress)
-          $pieValuesJson = ($values | ConvertTo-Json -Compress)
-
-          @"
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Klocwork severityCode Overview</title>
-  <script src="$chartJs"></script>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .wrap { max-width: 900px; }
-    h2 { margin: 0 0 12px 0; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h2>Overview (severityCode)</h2>
-    <p>Total issues: $total</p>
-    <canvas id="pie" height="140"></canvas>
-  </div>
-
-  <script>
-    const labels = $pieLabelsJson;
-    const values = $pieValuesJson;
-
-    new Chart(document.getElementById('pie'), {
-      type: 'pie',
-      data: {
-        labels,
-        datasets: [{ data: values }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { position: 'right' }
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-"@ | Set-Content -Path $pieHtmlPath -Encoding UTF8
-
-          # history bar
-          $histHtmlPath = Join-Path $reportDir $env:KW_HISTORY_HTML
-          $histLabels = @($history | ForEach-Object { "Build " + $_.build })
-          $histValues = @($history | ForEach-Object { [int]$_.total })
-
-          $histLabelsJson = ($histLabels | ConvertTo-Json -Compress)
-          $histValuesJson = ($histValues | ConvertTo-Json -Compress)
-
-          @"
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Klocwork History</title>
-  <script src="$chartJs"></script>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .wrap { max-width: 1000px; }
-    h2 { margin: 0 0 12px 0; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h2>History (Total issues per build) - Bar</h2>
-    <canvas id="bar" height="120"></canvas>
-  </div>
-
-  <script>
-    const labels = $histLabelsJson;
-    const values = $histValuesJson;
-
-    new Chart(document.getElementById('bar'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [{ label: 'Total', data: values }]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          y: { beginAtZero: true }
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-"@ | Set-Content -Path $histHtmlPath -Encoding UTF8
-
-          Write-Host "[INFO] Wrote charts to $reportDir"
-          Write-Host ("[INFO] severityCode breakdown: " + ($sevCounts.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" } | Out-String))
-        '''
-      }
-    }
-
     stage('Show issues as table in Jenkins (Warnings NG)') {
       steps {
         recordIssues(
           enabledForFailure: true,
           tools: [sarif(pattern: "${env.KW_ISSUES_SARIF}")]
         )
-      }
-    }
-
-    // ★追加：HTMLとして表示（HTML Publisher plugin が入っている場合）
-    stage('Publish Charts (HTML)') {
-      steps {
-        script {
-          // HTML Publisher plugin が無い環境でもビルドを落とさない
-          try {
-            publishHTML(target: [
-              allowMissing: true,
-              alwaysLinkToLastBuild: true,
-              keepAll: true,
-              reportDir: "${env.KW_REPORT_DIR}",
-              reportFiles: "${env.KW_SEV_PIE_HTML},${env.KW_HISTORY_HTML}",
-              reportName: "Klocwork Charts"
-            ])
-          } catch (err) {
-            echo "[WARN] publishHTML failed (maybe HTML Publisher plugin not installed). Charts are still archived as artifacts."
-          }
-        }
       }
     }
   }
@@ -451,7 +247,6 @@ pipeline {
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_ISSUES_JSON}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_REPORT_DIR}/**", allowEmptyArchive: true
     }
   }
 }
