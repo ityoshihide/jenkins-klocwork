@@ -4,7 +4,9 @@ pipeline {
 
   environment {
     MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
-    SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
+    // ★GitHub上のコード（WORKSPACE）をビルドしてbuild infoを作る前提に変更
+    //   ※現状 repo に vs2022\\4.sln が無いなら、まず repo に追加してください（このJenkinsfileはそれを前提にします）
+    SLN     = '%WORKSPACE%\\vs2022\\4.sln'
 
     KW_SERVER_CONFIG = 'Validateサーバー'
     KW_PROJECT       = 'jenkins_demo'
@@ -42,6 +44,16 @@ pipeline {
             if exist diff_file_list.txt del /f /q diff_file_list.txt
           '''
 
+          // ★WORKSPACE側の .sln が無いと差分解析は成立しない（build info が作れない）ので早期エラー
+          bat '''
+            if not exist "%SLN%" (
+              echo [ERROR] Solution file not found: "%SLN%"
+              echo [ERROR] GitHub上のコードをCIで差分解析するには、repo内に .sln/.vcxproj 等のビルド定義が必要です。
+              echo [ERROR] 例: repo 直下に vs2022\\4.sln を追加してから再実行してください。
+              exit /b 1
+            )
+          '''
+
           // diff 抽出
           bat '''
             git rev-parse --verify HEAD >nul 2>nul || exit /b 1
@@ -54,6 +66,7 @@ pipeline {
           '''
 
           // C/C++ のみ抽出（goto無し・ラベル無し）
+          // ★WORKSPACE直下相対にする（..\\ を付けない）
           bat '''
             setlocal EnableDelayedExpansion
             type nul > diff_file_list.txt
@@ -92,7 +105,17 @@ pipeline {
             if exist diff_file_list.txt type diff_file_list.txt
           '''
 
-          // ビルドスペック生成
+          // ★差分がC/C++ 0件なら解析スキップ（無駄にkwciagentで落とさない）
+          bat '''
+            for %%A in (diff_file_list.txt) do set "SZ=%%~zA"
+            if not defined SZ set "SZ=0"
+            if %SZ%==0 (
+              echo [INFO] C/C++ diff is empty. Skip kwciagent run.
+              exit /b 0
+            )
+          '''
+
+          // ビルドスペック生成（WORKSPACE側の .sln をビルドして build info を作る）
           klocworkBuildSpecGeneration([
             buildCommand: "\"${env.MSBUILD}\" \"${env.SLN}\" /t:Rebuild",
             output: 'kwinject.out',
@@ -107,7 +130,7 @@ pipeline {
 
           // kwciagent run（workspace直下で実行）
           bat '''
-            kwciagent set --project-dir "%WORKSPACE%\\.kwlp" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=jenkins_demo
+            kwciagent set --project-dir "%WORKSPACE%\\.kwlp" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=%KW_PROJECT%
 
             kwciagent run ^
               --project-dir "%WORKSPACE%\\.kwlp" ^
