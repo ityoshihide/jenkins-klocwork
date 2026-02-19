@@ -19,7 +19,7 @@ pipeline {
     DIFF_FILE_LIST = 'diff_file_list.txt'
     KW_BUILD_SPEC  = 'kwinject.out'
 
-    // ★追加：差分レポートHTML
+    // 差分レポートHTML
     KW_DIFF_REPORT_HTML = 'diff_report.html'
   }
 
@@ -49,12 +49,10 @@ pipeline {
     stage('Decide previous commit') {
       steps {
         script {
-          // 優先順：前回成功 → 前回 → HEAD~1 → (取れなければ空)
           def prev = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
           if (!prev?.trim()) prev = env.GIT_PREVIOUS_COMMIT
 
           if (!prev?.trim()) {
-            // HEAD~1 を試す（初回ビルドだと失敗することあり）
             def rc = bat(returnStatus: true, script: 'git rev-parse HEAD~1 > .prev_commit 2>nul')
             if (rc == 0) {
               prev = readFile('.prev_commit').trim()
@@ -76,7 +74,6 @@ pipeline {
       steps {
         script {
           if (!env.KW_PREV_COMMIT?.trim()) {
-            // 差分基準が無いなら全ファイルにしておく（=差分解析は使わない想定）
             bat """
               @echo off
               git ls-files > "%DIFF_FILE_LIST%"
@@ -110,7 +107,6 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            // BuildSpec生成（kwinjectを手動実行）
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
@@ -127,7 +123,6 @@ pipeline {
 
             script {
               if (env.KW_PREV_COMMIT?.trim()) {
-                // ★差分解析（previous commit を必ずハッシュで渡す）
                 klocworkIncremental([
                   additionalOpts: '',
                   buildSpec     : "${env.KW_BUILD_SPEC}",
@@ -142,16 +137,15 @@ pipeline {
                   reportFile        : ''
                 ])
 
-                // ★追加：差分結果をHTMLで出力（Jenkinsで表示するため）
+                // ★修正：-o は使わずリダイレクトでHTMLを書き出す
                 bat """
                   @echo off
                   if exist "%KW_DIFF_REPORT_HTML%" del /f /q "%KW_DIFF_REPORT_HTML%"
                   echo [INFO] Export Klocwork diff issues to %KW_DIFF_REPORT_HTML%
                   kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 ^
-                    -F html -o "%KW_DIFF_REPORT_HTML%" @%DIFF_FILE_LIST%
+                    -F html @%DIFF_FILE_LIST% > "%KW_DIFF_REPORT_HTML%"
                 """
               } else {
-                // previous commit が取れない時は、無理に差分解析せずフル解析
                 klocworkIncremental([
                   additionalOpts: '',
                   buildSpec     : "${env.KW_BUILD_SPEC}",
@@ -161,7 +155,6 @@ pipeline {
                   reportFile        : ''
                 ])
 
-                // ★追加：フル解析時はレポートが無いので消しておく（publishHTMLのmissing回避）
                 bat """
                   @echo off
                   if exist "%KW_DIFF_REPORT_HTML%" del /f /q "%KW_DIFF_REPORT_HTML%"
@@ -178,12 +171,8 @@ pipeline {
     always {
       archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
-
-      // ★追加：HTMLも保存（任意だが便利）
       archiveArtifacts artifacts: "${env.KW_DIFF_REPORT_HTML}", allowEmptyArchive: true
 
-      // ★追加：Jenkins上で「Klocwork Diff Analysis Issues」を表示
-      // ※事前に HTML Publisher Plugin をインストールしておくこと
       publishHTML([
         reportDir: '.',
         reportFiles: "${env.KW_DIFF_REPORT_HTML}",
