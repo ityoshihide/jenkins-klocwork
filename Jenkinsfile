@@ -49,7 +49,9 @@ pipeline {
               echo [ERROR] Makefile not found in WORKSPACE: "%WORKSPACE%"
               exit /b 1
             )
-            where %MAKE% >nul 2>nul || (
+
+            where %MAKE% >nul 2>nul
+            if errorlevel 1 (
               echo [ERROR] make command not found. Please install make (e.g., MSYS2/MinGW/Cygwin) and add it to PATH.
               exit /b 1
             )
