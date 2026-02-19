@@ -9,8 +9,8 @@ pipeline {
 
   environment {
     MSYS2_ROOT = 'C:\\msys64'
-    MAKE_WORKDIR = '.'         // Makefileのある場所
-    MAKE_ARGS = ''             // 例: '-j4 all' など
+    MAKE_WORKDIR = '.'
+    MAKE_ARGS = ''
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
     KW_SERVER_CONFIG  = 'Validateサーバー'
@@ -78,7 +78,7 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            // ★BuildSpec生成は手動でkwinject（null付与を防ぐ）
+            // BuildSpec生成（kwinjectを手動実行）
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
@@ -93,17 +93,18 @@ pipeline {
               kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
             """
 
-            // 解析（buildSpecは上で作ったkwinject.out）
+            // ★差分解析：ご指定の内容を反映
+            // 注意：初回ビルド等で GIT_PREVIOUS_SUCCESSFUL_COMMIT が空だと差分解析にならない場合あり
             klocworkIncremental([
               additionalOpts: '',
               buildSpec     : "${env.KW_BUILD_SPEC}",
               cleanupProject: false,
               differentialAnalysisConfig: [
-                diffFileList      : "${env.DIFF_FILE_LIST}",
-                diffType          : 'git',
-                gitPreviousCommit : ''
+                diffFileList     : "${env.DIFF_FILE_LIST}",
+                diffType         : 'git',
+                gitPreviousCommit: "${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}"
               ],
-              incrementalAnalysis: false,
+              incrementalAnalysis: true,
               projectDir        : '',
               reportFile        : ''
             ])
