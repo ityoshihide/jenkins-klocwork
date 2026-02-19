@@ -8,16 +8,16 @@ pipeline {
     SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
 
     // === Klocwork Jenkins プラグイン設定名（Jenkinsの設定に合わせて変更）===
-    // Jenkins > Manage Jenkins > Global Tool Configuration / Klocwork の「Installations」名
+    // Jenkins > Manage Jenkins > Global Tool Configuration > Klocwork の Installations 名
     KW_INSTALL_CONFIG = 'Klocwork 2025.4'
 
     // Jenkins > Manage Jenkins > Configure System > Klocwork Server Config の設定名
     KW_SERVER_CONFIG  = 'Validateサーバー'
 
-    // Klocwork プロジェクト名（Validate 側のプロジェクト）
+    // Validate 側のプロジェクト名（kwciagent set で使用）
     KW_PROJECT = 'jenkins_demo'
 
-    // ltoken（既にあるならそのまま）
+    // ltoken
     KW_LTOKEN = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
   }
 
@@ -35,12 +35,12 @@ git fetch --unshallow || exit /b 0
 
     stage('Klocwork Diff Analysis') {
       steps {
-        // ※ installConfig は必須（Missing required parameter: "installConfig" 対策）
-        // serverConfig も必須（Jenkins側で作ったKlocwork Server Configの名前）
+        // installConfig / serverConfig は必須
+        // projectName はこの環境の plugin では無効なので渡さない
         klocworkWrapper(
           installConfig: "${env.KW_INSTALL_CONFIG}",
           serverConfig : "${env.KW_SERVER_CONFIG}",
-          projectName  : "${env.KW_PROJECT}"
+          ltoken       : "${env.KW_LTOKEN}"
         ) {
           bat '''@echo on
 setlocal
@@ -67,7 +67,7 @@ echo ================================
 
 REM ===== diff list (Klocwork用) =====
 REM - 変更ファイルのうち、.c/.cc/.cpp/.cxx のみ対象
-REM - buildspec(kwinject.out) が ..\\revisions\\... を参照するため、同じ相対系に合わせて ..\\ を付ける
+REM - buildspec(kwinject.out) が ..\\revisions\\... を参照する前提に合わせて ..\\ を付与
 setlocal EnableDelayedExpansion
 type nul 1>"%WORKSPACE%\\diff_file_list.txt"
 
@@ -89,20 +89,20 @@ type "%WORKSPACE%\\diff_file_list.txt"
 echo ============================
 
 REM ===== build spec generation =====
-REM ※ kwinject.out は WORKSPACE 直下に出力（あなたの前提と一致）
 kwinject --version
 kwinject --output "%WORKSPACE%\\kwinject.out" "%MSBUILD%" "%SLN%" /t:Rebuild
 if errorlevel 1 exit /b 1
 if not exist "%WORKSPACE%\\kwinject.out" exit /b 1
 
 REM ===== IMPORTANT: cwd 対策 =====
-REM kwinject.out 内のパスが ..\\revisions\\... のため、
-REM %WORKSPACE%\\_kwcwd に移動してから kwciagent run すると
-REM ..\\revisions\\... が %WORKSPACE%\\revisions\\... に正しく解決される
+REM kwinject.out 内が ..\\revisions\\... を含むので、
+REM %WORKSPACE%\\_kwcwd に cd してから kwciagent run することで
+REM ..\\revisions\\... => %WORKSPACE%\\revisions\\... に解決される
 if not exist "%WORKSPACE%\\_kwcwd" mkdir "%WORKSPACE%\\_kwcwd"
 
 REM ===== kwciagent set/run =====
 kwciagent --version
+
 kwciagent set --project-dir "%WORKSPACE%\\.kwlp" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=%KW_PROJECT%
 if errorlevel 1 exit /b 1
 
