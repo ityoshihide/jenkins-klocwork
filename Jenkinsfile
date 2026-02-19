@@ -25,29 +25,6 @@ pipeline {
       steps { checkout scm }
     }
 
-    stage('Create diff file list') {
-      steps {
-        bat """
-          @echo off
-          if exist "%DIFF_FILE_LIST%" del /f /q "%DIFF_FILE_LIST%"
-
-          git rev-parse HEAD~1 >nul 2>nul
-          if %ERRORLEVEL%==0 (
-            git diff --name-only HEAD~1 HEAD > "%DIFF_FILE_LIST%"
-          ) else (
-            git ls-files > "%DIFF_FILE_LIST%"
-          )
-
-          for %%A in ("%DIFF_FILE_LIST%") do if %%~zA==0 (
-            git ls-files > "%DIFF_FILE_LIST%"
-          )
-
-          echo [INFO] diff file list:
-          type "%DIFF_FILE_LIST%"
-        """
-      }
-    }
-
     stage('Resolve make path') {
       steps {
         script {
@@ -63,6 +40,58 @@ pipeline {
           echo [INFO] Using MAKE_EXE=%MAKE_EXE%
           "%MAKE_EXE%" --version
         """
+      }
+    }
+
+    stage('Decide previous commit') {
+      steps {
+        script {
+          // 優先順：前回成功 → 前回 → HEAD~1 → (取れなければ空)
+          def prev = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+          if (!prev?.trim()) prev = env.GIT_PREVIOUS_COMMIT
+
+          if (!prev?.trim()) {
+            // HEAD~1 を試す（初回ビルドだと失敗することあり）
+            def rc = bat(returnStatus: true, script: 'git rev-parse HEAD~1 > .prev_commit 2>nul')
+            if (rc == 0) {
+              prev = readFile('.prev_commit').trim()
+            }
+          }
+
+          if (prev?.trim()) {
+            env.KW_PREV_COMMIT = prev.trim()
+            echo "Using KW_PREV_COMMIT=${env.KW_PREV_COMMIT}"
+          } else {
+            env.KW_PREV_COMMIT = ''
+            echo "KW_PREV_COMMIT not available -> fallback to full analysis"
+          }
+        }
+      }
+    }
+
+    stage('Create diff file list') {
+      steps {
+        script {
+          if (!env.KW_PREV_COMMIT?.trim()) {
+            // 差分基準が無いなら全ファイルにしておく（=差分解析は使わない想定）
+            bat """
+              @echo off
+              git ls-files > "%DIFF_FILE_LIST%"
+              echo [INFO] diff file list (fallback: all files):
+              type "%DIFF_FILE_LIST%"
+            """
+          } else {
+            bat """
+              @echo off
+              git diff --name-only %KW_PREV_COMMIT% HEAD > "%DIFF_FILE_LIST%"
+              for %%A in ("%DIFF_FILE_LIST%") do if %%~zA==0 (
+                git ls-files > "%DIFF_FILE_LIST%"
+              )
+              echo [INFO] diff file list (%KW_PREV_COMMIT%..HEAD):
+              type "%DIFF_FILE_LIST%"
+            """
+          }
+        }
       }
     }
 
@@ -93,21 +122,34 @@ pipeline {
               kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
             """
 
-            // ★差分解析：ご指定の内容を反映
-            // 注意：初回ビルド等で GIT_PREVIOUS_SUCCESSFUL_COMMIT が空だと差分解析にならない場合あり
-            klocworkIncremental([
-              additionalOpts: '',
-              buildSpec     : "${env.KW_BUILD_SPEC}",
-              cleanupProject: false,
-              differentialAnalysisConfig: [
-                diffFileList     : "${env.DIFF_FILE_LIST}",
-                diffType         : 'git',
-                gitPreviousCommit: "${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}"
-              ],
-              incrementalAnalysis: true,
-              projectDir        : '',
-              reportFile        : ''
-            ])
+            script {
+              if (env.KW_PREV_COMMIT?.trim()) {
+                // ★差分解析（previous commit を必ずハッシュで渡す）
+                klocworkIncremental([
+                  additionalOpts: '',
+                  buildSpec     : "${env.KW_BUILD_SPEC}",
+                  cleanupProject: false,
+                  differentialAnalysisConfig: [
+                    diffFileList     : "${env.DIFF_FILE_LIST}",
+                    diffType         : 'git',
+                    gitPreviousCommit: "${env.KW_PREV_COMMIT}"
+                  ],
+                  incrementalAnalysis: true,
+                  projectDir        : '',
+                  reportFile        : ''
+                ])
+              } else {
+                // previous commit が取れない時は、無理に差分解析せずフル解析
+                klocworkIncremental([
+                  additionalOpts: '',
+                  buildSpec     : "${env.KW_BUILD_SPEC}",
+                  cleanupProject: false,
+                  incrementalAnalysis: false,
+                  projectDir        : '',
+                  reportFile        : ''
+                ])
+              }
+            }
           }
         }
       }
