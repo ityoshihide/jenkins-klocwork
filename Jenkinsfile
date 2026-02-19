@@ -19,8 +19,8 @@ pipeline {
     DIFF_FILE_LIST = 'diff_file_list.txt'
     KW_BUILD_SPEC  = 'kwinject.out'
 
-    // 追加：差分指摘の出力（warnings-ng に渡す）
-    KW_DIFF_ISSUES_TSV   = 'diff_issues.tsv'
+    // Warnings NG 用
+    KW_DIFF_ISSUES_XML   = 'diff_issues.xml'
     KW_DIFF_ISSUES_SARIF = 'diff_issues.sarif'
   }
 
@@ -50,7 +50,6 @@ pipeline {
     stage('Decide previous commit') {
       steps {
         script {
-          // 優先順：前回成功 → 前回 → HEAD~1 → (取れなければ空)
           def prev = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
           if (!prev?.trim()) prev = env.GIT_PREVIOUS_COMMIT
 
@@ -109,7 +108,6 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            // BuildSpec生成（kwinjectを手動実行）
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
@@ -126,7 +124,6 @@ pipeline {
 
             script {
               if (env.KW_PREV_COMMIT?.trim()) {
-                // 差分解析
                 klocworkIncremental([
                   additionalOpts: '',
                   buildSpec     : "${env.KW_BUILD_SPEC}",
@@ -141,7 +138,6 @@ pipeline {
                   reportFile        : ''
                 ])
               } else {
-                // 初回など previous commit が取れない時はフル解析
                 klocworkIncremental([
                   additionalOpts: '',
                   buildSpec     : "${env.KW_BUILD_SPEC}",
@@ -157,60 +153,78 @@ pipeline {
       }
     }
 
-    stage('Export diff issues to SARIF (for Warnings NG)') {
-      when {
-        expression { return env.KW_PREV_COMMIT?.trim() }
-      }
+    stage('Export diff issues XML -> SARIF (for Warnings)') {
+      when { expression { return env.KW_PREV_COMMIT?.trim() } }
       steps {
-        // 1) 差分ファイルに限定して “指摘一覧” を取得（HTMLは無理なのでscriptable/tsvで取る）
+        // 1) XMLをファイルへ出力（ここが一番確実）
         bat """
           @echo off
-          echo [INFO] Export Klocwork diff issues to %KW_DIFF_ISSUES_TSV%
-          rem scriptable はタブ区切りで扱いやすい（環境により出力形式が多少違っても吸収しやすい）
-          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F scriptable @%DIFF_FILE_LIST% > "%KW_DIFF_ISSUES_TSV%"
-          type "%KW_DIFF_ISSUES_TSV%"
+          echo [INFO] Export Klocwork diff issues to %KW_DIFF_ISSUES_XML%
+          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F xml @%DIFF_FILE_LIST% > "%KW_DIFF_ISSUES_XML%"
+          echo [INFO] diff issues xml size:
+          for %%A in ("%KW_DIFF_ISSUES_XML%") do echo %%~zA bytes
         """
 
-        // 2) TSV -> SARIF（Warnings NG の sarif 解析で “表” にできる）
+        // 2) XML -> SARIF
         powershell '''
-          $tsv = Join-Path $env:WORKSPACE $env:KW_DIFF_ISSUES_TSV
+          $xmlPath   = Join-Path $env:WORKSPACE $env:KW_DIFF_ISSUES_XML
           $sarifPath = Join-Path $env:WORKSPACE $env:KW_DIFF_ISSUES_SARIF
 
-          if (!(Test-Path $tsv)) {
-            Write-Host "[WARN] TSV not found: $tsv"
-            # 空のSARIFでも作っておく（recordIssuesが落ちないように）
-            $empty = @{
-              '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-              version='2.1.0'
-              runs=@(@{ tool=@{ driver=@{ name='Klocwork (diff)'; rules=@() } }; results=@() })
-            } | ConvertTo-Json -Depth 20
-            Set-Content -Path $sarifPath -Value $empty -Encoding UTF8
+          $emptySarif = @{
+            '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
+            version='2.1.0'
+            runs=@(@{ tool=@{ driver=@{ name='Klocwork (diff)'; rules=@() } }; results=@() })
+          } | ConvertTo-Json -Depth 50
+
+          if (!(Test-Path $xmlPath)) {
+            Write-Host "[WARN] XML not found: $xmlPath"
+            Set-Content -Path $sarifPath -Value $emptySarif -Encoding UTF8
             exit 0
           }
 
-          $lines = Get-Content $tsv
+          $size = (Get-Item $xmlPath).Length
+          if ($size -eq 0) {
+            Write-Host "[WARN] XML is empty"
+            Set-Content -Path $sarifPath -Value $emptySarif -Encoding UTF8
+            exit 0
+          }
+
+          [xml]$x = Get-Content -Path $xmlPath
+
+          # XML構造が環境で違う可能性があるので、"issue" っぽいノードを広めに拾う
+          $issueNodes = @()
+          $issueNodes += $x.SelectNodes("//*[local-name()='issue']")
+          $issueNodes += $x.SelectNodes("//*[local-name()='problem']")
+          $issueNodes += $x.SelectNodes("//*[local-name()='defect']")
+
           $results = @()
 
-          foreach ($line in $lines) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          foreach ($n in $issueNodes) {
+            # ありがちな要素名を候補として拾う（無ければ空でOK）
+            $file = ($n.SelectSingleNode(".//*[local-name()='file']")?.InnerText)
+            if (-not $file) { $file = ($n.SelectSingleNode(".//*[local-name()='path']")?.InnerText) }
 
-            # 期待：tab区切り（例）
-            # id <TAB> file <TAB> function <TAB> code <TAB> message <TAB> ... <TAB> severity ...
-            $cols = $line -split "`t"
-            if ($cols.Count -lt 5) { continue }
+            $line = ($n.SelectSingleNode(".//*[local-name()='line']")?.InnerText)
+            if (-not $line) { $line = 1 }
+            [int]$line = $line
 
-            $file = $cols[1]
-            $ruleId = $cols[3]
-            $msg = $cols[4]
+            $rule = ($n.SelectSingleNode(".//*[local-name()='code']")?.InnerText)
+            if (-not $rule) { $rule = ($n.SelectSingleNode(".//*[local-name()='checker']")?.InnerText) }
+            if (-not $rule) { $rule = "Klocwork" }
 
-            # line情報が無いケースが多いので 1 に寄せる（場所表示だけでも表は出せる）
+            $msg  = ($n.SelectSingleNode(".//*[local-name()='message']")?.InnerText)
+            if (-not $msg) { $msg = ($n.SelectSingleNode(".//*[local-name()='description']")?.InnerText) }
+            if (-not $msg) { $msg = "Klocwork issue" }
+
+            if (-not $file) { $file = "unknown" }
+
             $results += @{
-              ruleId = $ruleId
+              ruleId = $rule
               message = @{ text = $msg }
               locations = @(@{
                 physicalLocation = @{
                   artifactLocation = @{ uri = $file }
-                  region = @{ startLine = 1 }
+                  region = @{ startLine = $line }
                 }
               })
             }
@@ -220,24 +234,20 @@ pipeline {
             '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
             version='2.1.0'
             runs=@(@{
-              tool=@{ driver=@{ name='Klocwork (diff)'; informationUri=''; rules=@() } }
+              tool=@{ driver=@{ name='Klocwork (diff)'; rules=@() } }
               results=$results
             })
-          } | ConvertTo-Json -Depth 20
+          } | ConvertTo-Json -Depth 50
 
           Set-Content -Path $sarifPath -Value $sarif -Encoding UTF8
-          Write-Host "[INFO] Wrote SARIF: $sarifPath"
+          Write-Host "[INFO] Wrote SARIF: $sarifPath (results: $($results.Count))"
         '''
       }
     }
 
-    stage('Show issues as table in Jenkins (Warnings NG)') {
-      when {
-        expression { return env.KW_PREV_COMMIT?.trim() }
-      }
+    stage('Show issues as table in Jenkins (Warnings)') {
+      when { expression { return env.KW_PREV_COMMIT?.trim() } }
       steps {
-        // Warnings Next Generation で “表” 表示
-        // ※ plugin が入っていれば、ビルド画面に Warnings のリンクが出ます
         recordIssues(
           enabledForFailure: true,
           tools: [sarif(pattern: "${env.KW_DIFF_ISSUES_SARIF}")]
@@ -250,7 +260,7 @@ pipeline {
     always {
       archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_DIFF_ISSUES_TSV}", allowEmptyArchive: true
+      archiveArtifacts artifacts: "${env.KW_DIFF_ISSUES_XML}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_DIFF_ISSUES_SARIF}", allowEmptyArchive: true
     }
   }
