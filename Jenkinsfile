@@ -18,6 +18,9 @@ pipeline {
 
     DIFF_FILE_LIST = 'diff_file_list.txt'
     KW_BUILD_SPEC  = 'kwinject.out'
+
+    // ★追加：差分レポートHTML
+    KW_DIFF_REPORT_HTML = 'diff_report.html'
   }
 
   stages {
@@ -138,6 +141,15 @@ pipeline {
                   projectDir        : '',
                   reportFile        : ''
                 ])
+
+                // ★追加：差分結果をHTMLで出力（Jenkinsで表示するため）
+                bat """
+                  @echo off
+                  if exist "%KW_DIFF_REPORT_HTML%" del /f /q "%KW_DIFF_REPORT_HTML%"
+                  echo [INFO] Export Klocwork diff issues to %KW_DIFF_REPORT_HTML%
+                  kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 ^
+                    -F html -o "%KW_DIFF_REPORT_HTML%" @%DIFF_FILE_LIST%
+                """
               } else {
                 // previous commit が取れない時は、無理に差分解析せずフル解析
                 klocworkIncremental([
@@ -148,6 +160,12 @@ pipeline {
                   projectDir        : '',
                   reportFile        : ''
                 ])
+
+                // ★追加：フル解析時はレポートが無いので消しておく（publishHTMLのmissing回避）
+                bat """
+                  @echo off
+                  if exist "%KW_DIFF_REPORT_HTML%" del /f /q "%KW_DIFF_REPORT_HTML%"
+                """
               }
             }
           }
@@ -160,6 +178,20 @@ pipeline {
     always {
       archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
+
+      // ★追加：HTMLも保存（任意だが便利）
+      archiveArtifacts artifacts: "${env.KW_DIFF_REPORT_HTML}", allowEmptyArchive: true
+
+      // ★追加：Jenkins上で「Klocwork Diff Analysis Issues」を表示
+      // ※事前に HTML Publisher Plugin をインストールしておくこと
+      publishHTML([
+        reportDir: '.',
+        reportFiles: "${env.KW_DIFF_REPORT_HTML}",
+        reportName: 'Klocwork Diff Analysis Issues',
+        keepAll: true,
+        alwaysLinkToLastBuild: true,
+        allowMissing: true
+      ])
     }
   }
 }
