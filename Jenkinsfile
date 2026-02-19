@@ -28,9 +28,10 @@ pipeline {
       steps {
 
         klocworkWrapper(
+          installConfig: '-- なし --',
+          ltoken: "${env.KW_LTOKEN}",
           serverConfig: "${env.KW_SERVER_CONFIG}",
-          serverProject: "${env.KW_PROJECT}",
-          ltoken: "${env.KW_LTOKEN}"
+          serverProject: "${env.KW_PROJECT}"
         ) {
 
           // Cleanup
@@ -60,24 +61,20 @@ pipeline {
             for /F "usebackq delims=" %%F in ("diff_file_list_raw.txt") do (
               set "p=%%F"
               if not "!p!"=="" (
-
                 set "ext=%%~xF"
 
                 if /I "!ext!"==".c" (
                   set "p=!p:/=\\!"
                   echo ..\\!p!>> diff_file_list.txt
                 )
-
                 if /I "!ext!"==".cc" (
                   set "p=!p:/=\\!"
                   echo ..\\!p!>> diff_file_list.txt
                 )
-
                 if /I "!ext!"==".cpp" (
                   set "p=!p:/=\\!"
                   echo ..\\!p!>> diff_file_list.txt
                 )
-
                 if /I "!ext!"==".cxx" (
                   set "p=!p:/=\\!"
                   echo ..\\!p!>> diff_file_list.txt
@@ -89,6 +86,8 @@ pipeline {
           '''
 
           bat '''
+            echo ===== diff_file_list_raw.txt =====
+            if exist diff_file_list_raw.txt type diff_file_list_raw.txt
             echo ===== diff_file_list.txt =====
             if exist diff_file_list.txt type diff_file_list.txt
           '''
@@ -100,6 +99,7 @@ pipeline {
             tool: 'kwinject'
           ])
 
+          // ガード
           bat '''
             if not exist kwinject.out exit /b 1
             for %%A in (kwinject.out) do if %%~zA==0 exit /b 1
@@ -118,15 +118,8 @@ pipeline {
               @"%WORKSPACE%\\diff_file_list.txt"
           '''
 
-          klocworkIssueSync([
-            statusAnalyze: true,
-            statusDefer: true,
-            statusFilter: true,
-            statusFix: true,
-            statusFixInNextRelease: true,
-            statusIgnore: true,
-            statusNotAProblem: true
-          ])
+          // 必要なら同期
+          // klocworkIssueSync([...])
         }
       }
     }
@@ -134,7 +127,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'kwinject.out,diff_file_list_raw.txt,diff_file_list.txt,kwtables/**'
+      archiveArtifacts artifacts: 'kwinject.out,diff_file_list_raw.txt,diff_file_list.txt,kwtables/**', onlyIfSuccessful: false
     }
   }
 }
