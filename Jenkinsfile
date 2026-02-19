@@ -3,25 +3,18 @@ pipeline {
   options { skipDefaultCheckout(true) }
 
   environment {
-    // パスは「クォート無し」で持って、使うときに必ず " " で囲う
     MSBUILD = 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe'
     SLN     = 'C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln'
 
-    // ここは Jenkins の「Klocwork Server Config」の名前に合わせる
-    // 例：UIで作った設定名が "Validateサーバー" ならこれでOK
     KW_SERVER_CONFIG = 'Validateサーバー'
     KW_PROJECT       = 'jenkins_demo'
-
-    KW_LTOKEN = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
+    KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
   }
 
   stages {
     stage('Checkout') {
       steps {
-        // まず通常 checkout
         checkout scm
-
-        // shallow clone 等で HEAD~1 が無い問題を潰す（失敗しても続行）
         bat '''
           @echo on
           git rev-parse --is-inside-work-tree
@@ -43,30 +36,51 @@ pipeline {
           // 毎回クリーン
           bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
+          bat 'if exist diff_file_list_raw.txt del /f /q diff_file_list_raw.txt'
           bat 'if exist diff_file_list.txt del /f /q diff_file_list.txt'
 
-          // 差分ファイル一覧を作成（重要：ちゃんと > diff_file_list.txt する）
-          // HEAD~1 が無い場合は空ファイルにする
+          // 1) 差分ファイル一覧（生）を作成
           bat '''
             @echo on
             git rev-parse --verify HEAD >nul 2>nul || (echo [ERROR] HEAD not found & exit /b 1)
+
             git rev-parse --verify HEAD~1 >nul 2>nul && (
-              git diff --name-only HEAD~1 HEAD > diff_file_list.txt
+              git diff --name-only HEAD~1 HEAD > diff_file_list_raw.txt
             ) || (
-              type nul > diff_file_list.txt
+              type nul > diff_file_list_raw.txt
             )
           '''
 
-          // diff_file_list.txt の中身をコンソールに表示（確認用）
+          // 2) 生リストを、ビルドスペックに合わせた相対パスへ変換
+          //    - gitは / 区切りなので \ に変換
+          //    - MSBuildログのように ..\ を付与
+          //    - 空行は除外
           bat '''
             @echo on
-            echo ===== diff_file_list.txt =====
+            echo ===== diff_file_list_raw.txt =====
+            if exist diff_file_list_raw.txt type diff_file_list_raw.txt
+            echo ================================
+
+            setlocal EnableDelayedExpansion
+            type nul > diff_file_list.txt
+
+            for /f "usebackq delims=" %%F in ("diff_file_list_raw.txt") do (
+              set "p=%%F"
+              if not "!p!"=="" (
+                set "p=!p:/=\\!"
+                echo ..\\!p!>> diff_file_list.txt
+              )
+            )
+
+            endlocal
+
+            echo ===== diff_file_list.txt (converted) =====
             if exist diff_file_list.txt type diff_file_list.txt
             for %%A in (diff_file_list.txt) do @echo [INFO] diff_file_list.txt bytes=%%~zA
-            echo =============================
+            echo =========================================
           '''
 
-          // 1) kwinject（"C:\Program" is not executable 対策：必ず二重引用符）
+          // 3) kwinject
           klocworkBuildSpecGeneration([
             additionalOpts: '',
             buildCommand: "\"${env.MSBUILD}\" \"${env.SLN}\" /t:Rebuild",
@@ -76,29 +90,26 @@ pipeline {
             workDir: ''
           ])
 
-          // ガード（空ファイル事故防止）
+          // ガード
           bat 'if not exist kwinject.out exit /b 1'
           bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
-          // 2) 差分解析（Diff Analysis）
-          // ※パラメータ名はあなたが使っていた "differentialAnalysisConfig" に合わせてます
+          // 4) 差分解析
+          // 重要：プラグインが内部で git diff を再実行して diff_file_list を上書きする挙動を避ける狙いで diffType を "file" にする
           klocworkIncremental([
             additionalOpts: '',
             buildSpec: 'kwinject.out',
             cleanupProject: false,
             differentialAnalysisConfig: [
               diffFileList: 'diff_file_list.txt',
-              diffType: 'git',
-              // ここが空だとプラグイン側で解釈が揺れることがあるので明示推奨
-              gitPreviousCommit: 'HEAD~1'
+              diffType: 'file'
             ],
-            // Diff Analysis を動かしたいなら通常 true の方が意図に合います
             incrementalAnalysis: true,
             projectDir: '',
             reportFile: ''
           ])
 
-          // 3) Jenkinsへ指摘を同期（Dashboard表示を安定させる狙い）
+          // 5) Jenkinsへ指摘同期（表示を安定させたい場合）
           klocworkIssueSync([
             additionalOpts: '',
             dryRun: false,
@@ -113,9 +124,6 @@ pipeline {
             statusIgnore: true,
             statusNotAProblem: true
           ])
-
-          // 必要ならゲートや同期もここに追加
-          // klocworkQualityGateway([...])
         }
       }
     }
@@ -123,7 +131,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'kwinject.out,diff_file_list.txt,kwtables/**', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'kwinject.out,diff_file_list_raw.txt,diff_file_list.txt,kwtables/**', onlyIfSuccessful: false
     }
   }
 }
