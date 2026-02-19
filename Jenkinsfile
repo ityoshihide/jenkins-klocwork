@@ -8,15 +8,16 @@ pipeline {
   }
 
   environment {
-    MSYS2_ROOT   = 'C:\\msys64'
-    MAKE_WORKDIR = '.'
-    MAKE_ARGS    = ''
+    MSYS2_ROOT    = 'C:\\msys64'
+    MAKE_WORKDIR  = '.'
+    MAKE_ARGS     = 'all'
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
     KW_SERVER_CONFIG  = 'Validateサーバー'
     KW_SERVER_PROJECT = 'jenkins_demo'
 
-    KW_BUILD_SPEC = 'kwinject.out'
+    KW_PROJECT_DIR = '.kwlp'
+    KW_BUILD_SPEC  = 'kwinject.out'
 
     // Warnings NG に渡す
     KW_ISSUES_JSON  = 'kw_issues.json'
@@ -46,6 +47,25 @@ pipeline {
       }
     }
 
+    stage('Reset workspace Klocwork artifacts (FORCE FULL)') {
+      steps {
+        bat """
+          @echo off
+          cd /d "%WORKSPACE%"
+
+          echo [INFO] Remove previous Klocwork working dir: %KW_PROJECT_DIR%
+          if exist "%WORKSPACE%\\%KW_PROJECT_DIR%" rmdir /s /q "%WORKSPACE%\\%KW_PROJECT_DIR%"
+
+          echo [INFO] Remove previous build spec: %KW_BUILD_SPEC%
+          if exist "%WORKSPACE%\\%KW_BUILD_SPEC%" del /f /q "%WORKSPACE%\\%KW_BUILD_SPEC%"
+
+          echo [INFO] Remove previous SARIF/JSON
+          if exist "%WORKSPACE%\\%KW_ISSUES_JSON%" del /f /q "%WORKSPACE%\\%KW_ISSUES_JSON%"
+          if exist "%WORKSPACE%\\%KW_ISSUES_SARIF%" del /f /q "%WORKSPACE%\\%KW_ISSUES_SARIF%"
+        """
+      }
+    }
+
     stage('Klocwork Analysis (FULL)') {
       steps {
         withEnv([
@@ -58,155 +78,120 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            // BuildSpec生成（kwinjectを手動実行）
+            // 1) 必ずクリーンしてコンパイルを発生させる（ここが最重要）
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
 
+              echo [INFO] Pre-clean to force rebuild
+              "%MAKE_EXE%" clean
+
               echo [INFO] kwinject version
               kwinject --version
-
-              if exist "%WORKSPACE%\\%KW_BUILD_SPEC%" del /f /q "%WORKSPACE%\\%KW_BUILD_SPEC%"
 
               echo [INFO] generating build spec: %KW_BUILD_SPEC%
               echo [INFO] run: kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
               kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
             """
 
+            // 2) kwciagent run が 0 で終わることを強制（失敗してたらそこで落とす）
             script {
-              // ★差分ではなく、全体解析に固定
-              klocworkIncremental([
-                additionalOpts     : '',
-                buildSpec          : "${env.KW_BUILD_SPEC}",
-                cleanupProject     : false,
-                incrementalAnalysis: false,
-                projectDir         : '',
-                reportFile         : ''
-              ])
+              def rc = bat(returnStatus: true, script: """
+                @echo off
+                kwciagent set --project-dir "%WORKSPACE%\\%KW_PROJECT_DIR%" klocwork.host=192.168.137.1 klocwork.port=2540 klocwork.project=%KW_SERVER_PROJECT%
+                kwciagent run --project-dir "%WORKSPACE%\\%KW_PROJECT_DIR%" --license-host 192.168.137.1 --license-port 27000 -Y -L --build-spec "%WORKSPACE%\\%KW_BUILD_SPEC%"
+              """)
+              if (rc != 0) {
+                error("kwciagent run failed (rc=${rc}). Build spec may be empty. Check that compilation actually ran under kwinject.")
+              }
             }
+
+            // 3) 全指摘を JSON で取得（ここが “全体” の出口）
+            bat """
+              @echo off
+              echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
+              kwciagent list --project-dir "%WORKSPACE%\\%KW_PROJECT_DIR%" --license-host 192.168.137.1 --license-port 27000 -F json > "%WORKSPACE%\\%KW_ISSUES_JSON%"
+              for %%A in ("%WORKSPACE%\\%KW_ISSUES_JSON%") do echo [INFO] JSON size: %%~zA bytes
+            """
           }
         }
       }
     }
 
-    stage('Export issues JSON -> SARIF (for Warnings NG)') {
+    stage('Convert JSON -> SARIF (for Warnings NG)') {
       steps {
-        // JSONで出す（scriptableの罠を回避）
-        bat """
-          @echo off
-          echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
-          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
-          echo [INFO] JSON size:
-          for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
-        """
-
-        // JSON -> SARIF
         powershell '''
           $jsonPath  = Join-Path $env:WORKSPACE $env:KW_ISSUES_JSON
           $sarifPath = Join-Path $env:WORKSPACE $env:KW_ISSUES_SARIF
 
-          function Write-EmptySarif($path) {
-            $emptyObj = @{
-              '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-              version='2.1.0'
-              runs=@(@{ tool=@{ driver=@{ name='Klocwork'; rules=@() } }; results=@() })
-            }
-            $emptyObj | ConvertTo-Json -Depth 20 | Set-Content -Path $path -Encoding UTF8
-          }
-
           if (!(Test-Path $jsonPath)) {
-            Write-Host "[WARN] JSON not found: $jsonPath"
-            Write-EmptySarif $sarifPath
-            exit 0
+            throw "[ERROR] JSON not found: $jsonPath"
           }
 
-          $raw = Get-Content -Path $jsonPath -Raw
-          if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Host "[WARN] JSON empty"
-            Write-EmptySarif $sarifPath
-            exit 0
-          }
+          $data = Get-Content $jsonPath -Raw | ConvertFrom-Json
 
-          try {
-            $obj = $raw | ConvertFrom-Json
-          } catch {
-            Write-Host "[ERROR] ConvertFrom-Json failed. Dump first 500 chars:"
-            Write-Host ($raw.Substring(0, [Math]::Min(500, $raw.Length)))
-            Write-EmptySarif $sarifPath
-            exit 0
-          }
+          # Klocwork の JSON 形式は環境/バージョンで揺れるので「配列っぽいところ」を探す
+          $issues = @()
+          if ($data -is [System.Array]) { $issues = $data }
+          elseif ($data.issues) { $issues = $data.issues }
+          elseif ($data.result) { $issues = $data.result }
+          else { $issues = @() }
 
-          # 形が環境で違う可能性を吸収：
-          # - 配列そのもの
-          # - { issues: [...] } / { results: [...] } / { items: [...] } 的な形
-          $issues = $null
-          if ($obj -is [System.Array]) { $issues = $obj }
-          elseif ($obj.issues) { $issues = $obj.issues }
-          elseif ($obj.results) { $issues = $obj.results }
-          elseif ($obj.items) { $issues = $obj.items }
+          $results = @()
 
-          if ($null -eq $issues) {
-            Write-Host "[WARN] Could not find issues array in JSON. Keys:"
-            $obj.PSObject.Properties.Name | ForEach-Object { Write-Host " - $_" }
-            Write-EmptySarif $sarifPath
-            exit 0
-          }
+          foreach ($i in $issues) {
+            # フィールド名が揺れても拾えるように候補を複数見る
+            $file  = $i.file
+            if (-not $file) { $file = $i.path }
+            if (-not $file) { $file = $i.location?.file }
 
-          $results = New-Object System.Collections.Generic.List[Object]
+            $rule  = $i.code
+            if (-not $rule) { $rule = $i.checker }
+            if (-not $rule) { $rule = $i.ruleId }
 
-          foreach ($it in $issues) {
-            # よくありそうなキー名を吸収
-            $file = $null
-            foreach ($k in @('file','path','filename','sourceFile','source_file')) {
-              if ($it.$k) { $file = [string]$it.$k; break }
-            }
-            if ([string]::IsNullOrWhiteSpace($file)) { $file = 'unknown' }
+            $msg   = $i.message
+            if (-not $msg) { $msg = $i.msg }
+            if (-not $msg) { $msg = $i.description }
 
-            $rule = $null
-            foreach ($k in @('code','checker','rule','ruleId','id')) {
-              if ($it.$k) { $rule = [string]$it.$k; break }
-            }
-            if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
+            $line  = $i.line
+            if (-not $line) { $line = $i.location?.line }
+            if (-not $line) { $line = 1 }
 
-            $msg = $null
-            foreach ($k in @('message','msg','description','text')) {
-              if ($it.$k) { $msg = [string]$it.$k; break }
-            }
-            if ([string]::IsNullOrWhiteSpace($msg)) { $msg = '' }
+            if (-not $file -or -not $rule -or -not $msg) { continue }
 
-            $line = 1
-            foreach ($k in @('line','lineNumber','line_number','startLine')) {
-              if ($it.$k) {
-                $tmp = 0
-                if ([int]::TryParse([string]$it.$k, [ref]$tmp) -and $tmp -gt 0) { $line = $tmp }
-                break
-              }
+            # Warnings NG は workspace 内の相対パスの方が安定することが多い
+            # 絶対パスだったら workspace 部分を落として相対化を試みる
+            $uri = $file
+            $ws = $env:WORKSPACE.TrimEnd('\\')
+            if ($uri.StartsWith($ws, [System.StringComparison]::OrdinalIgnoreCase)) {
+              $uri = $uri.Substring($ws.Length).TrimStart('\\')
+              $uri = $uri -replace '\\\\','/'
             }
 
-            $results.Add(@{
-              ruleId  = $rule
-              message = @{ text = $msg }
+            $results += @{
+              ruleId  = "$rule"
+              message = @{ text = "$msg" }
               locations = @(@{
                 physicalLocation = @{
-                  artifactLocation = @{ uri = $file }
-                  region = @{ startLine = $line }
+                  artifactLocation = @{ uri = "$uri" }
+                  region = @{ startLine = [int]$line }
                 }
               })
-            })
+            }
           }
 
-          $sarifObj = @{
+          $sarif = @{
             '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
             version='2.1.0'
             runs=@(@{
               tool=@{ driver=@{ name='Klocwork'; rules=@() } }
               results=$results
             })
-          }
+          } | ConvertTo-Json -Depth 50
 
-          $sarifObj | ConvertTo-Json -Depth 20 | Set-Content -Path $sarifPath -Encoding UTF8
+          Set-Content -Path $sarifPath -Value $sarif -Encoding UTF8
           Write-Host "[INFO] Wrote SARIF: $sarifPath"
-          Write-Host ("[INFO] SARIF results: {0}" -f $results.Count)
+          Write-Host "[INFO] SARIF results: $($results.Count)"
         '''
       }
     }
