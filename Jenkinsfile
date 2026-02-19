@@ -98,9 +98,24 @@ pipeline {
             reportFile: ''
           ])
 
+          // 3) Jenkinsへ指摘を同期（Dashboard表示を安定させる狙い）
+          klocworkIssueSync([
+            additionalOpts: '',
+            dryRun: false,
+            lastSync: '03-00-0000 00:00:00',
+            projectRegexp: '',
+            statusAnalyze: true,
+            statusDefer: true,
+            statusFilter: true,
+            statusFix: true,
+            statusFixInLaterRelease: false,
+            statusFixInNextRelease: true,
+            statusIgnore: true,
+            statusNotAProblem: true
+          ])
+
           // 必要ならゲートや同期もここに追加
           // klocworkQualityGateway([...])
-          // klocworkIssueSync([...])
         }
       }
     }
