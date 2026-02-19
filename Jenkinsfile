@@ -1,6 +1,3 @@
-了解。原因が **`triggers { githubPush() }` が無い** なので、**それだけ追加**して他は一切いじらない版を出します（全文）。
-
-```groovy
 pipeline {
   agent any
   triggers { githubPush() }
