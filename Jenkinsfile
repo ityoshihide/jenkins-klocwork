@@ -1,50 +1,12 @@
 pipeline {
   agent any
-  triggers { githubPush() }
-
-  options {
-    skipDefaultCheckout(true)
-    timestamps()
-  }
-
-  environment {
-    KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
-    KW_SERVER_URL    = 'http://192.168.137.1:2540'
-    KW_SERVER_CONFIG = 'Validateサーバー'
-    KW_PROJECT       = 'jenkins_demo'
-
-    KW_ISSUES_JSON  = 'kw_issues.json'
-    KW_ISSUES_SARIF = 'kw_issues.sarif'
-  }
+  options { skipDefaultCheckout(true) }
 
   stages {
+
     stage('Checkout') {
-      steps { checkout scm }
-    }
-
-    stage('Ensure Klocwork Local Project (.kwlp/.kwps)') {
       steps {
-        script {
-          def kwlpDir = "${env.WORKSPACE}\\.kwlp"
-          def kwpsDir = "${env.WORKSPACE}\\.kwps"
-
-          def kwlpOk = fileExists(kwlpDir)
-          def kwpsOk = fileExists(kwpsDir)
-
-          if (!kwlpOk || !kwpsOk) {
-            echo "[INFO] .kwlp/.kwps not found. Running kwcheck create..."
-
-            bat """
-              @echo off
-              cd /d "%WORKSPACE%"
-
-              kwcheck --version
-              kwcheck create --url ${env.KW_SERVER_URL} --project ${env.KW_PROJECT}
-            """
-          } else {
-            echo "[INFO] .kwlp/.kwps already exist. Skipping kwcheck create."
-          }
-        }
+        checkout scm
       }
     }
 
@@ -52,15 +14,17 @@ pipeline {
       steps {
         klocworkWrapper(
           installConfig: '-- なし --',
-          ltoken: "${env.KW_LTOKEN}",
-          serverConfig: "${env.KW_SERVER_CONFIG}",
-          serverProject: "${env.KW_PROJECT}"
+          // ★ここを明示：本来の場所（あなたが提示したパス）
+          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\ltoken',
+          serverConfig: 'Validateサーバー',
+          serverProject: 'jenkins_demo'
         ) {
-          // 毎回クリーン（buildspec/tables）
+
+          // 毎回クリーン
           bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
 
-          // 1) kwinject 相当（buildspec生成）
+          // 1) kwinject 相当
           klocworkBuildSpecGeneration([
             additionalOpts: '',
             buildCommand: '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe" "C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln" /t:Rebuild',
@@ -70,7 +34,7 @@ pipeline {
             workDir: ''
           ])
 
-          // buildspec ガード（空ファイル事故防止）
+          // ガード（空ファイル事故防止）
           bat 'if not exist kwinject.out exit /b 1'
           bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
@@ -92,7 +56,7 @@ pipeline {
             serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
           )
 
-          // 4) Sync（サーバの指摘状態を同期）
+          // 4)Sync
           klocworkIssueSync([
             additionalOpts: '',
             dryRun: false,
@@ -115,15 +79,15 @@ pipeline {
       steps {
         bat """
           @echo off
-          echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
-          kwciagent list --system --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
+          echo [INFO] Export Klocwork issues to kw_issues.json
+          kwciagent list --system --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%WORKSPACE%\\kw_issues.json"
           echo [INFO] JSON size:
-          for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
+          for %%A in ("%WORKSPACE%\\kw_issues.json") do echo %%~zA bytes
         """
 
         powershell '''
-          $jsonPath  = Join-Path $env:WORKSPACE $env:KW_ISSUES_JSON
-          $sarifPath = Join-Path $env:WORKSPACE $env:KW_ISSUES_SARIF
+          $jsonPath  = Join-Path $env:WORKSPACE 'kw_issues.json'
+          $sarifPath = Join-Path $env:WORKSPACE 'kw_issues.sarif'
 
           function Write-EmptySarif($path) {
             $emptyObj = @{
@@ -211,7 +175,7 @@ pipeline {
       steps {
         recordIssues(
           enabledForFailure: true,
-          tools: [sarif(pattern: "${env.KW_ISSUES_SARIF}")]
+          tools: [sarif(pattern: "kw_issues.sarif")]
         )
       }
     }
@@ -220,7 +184,7 @@ pipeline {
   post {
     always {
       archiveArtifacts artifacts: 'kwinject.out,kwtables/**', onlyIfSuccessful: false
-      archiveArtifacts artifacts: "${env.KW_ISSUES_JSON},${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
+      archiveArtifacts artifacts: 'kw_issues.json,kw_issues.sarif', allowEmptyArchive: true
     }
   }
 }
