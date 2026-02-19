@@ -18,8 +18,8 @@ pipeline {
 
     KW_BUILD_SPEC = 'kwinject.out'
 
-    // Warnings NG に渡す（今回は“全体解析”の指摘を表で見せる）
-    KW_ISSUES_TSV   = 'kw_issues.tsv'
+    // Warnings NG に渡す
+    KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
   }
 
@@ -73,13 +73,13 @@ pipeline {
               kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
             """
 
-            // ★ここを「差分」ではなく「全体解析」に固定
             script {
+              // ★差分ではなく、全体解析に固定
               klocworkIncremental([
                 additionalOpts     : '',
                 buildSpec          : "${env.KW_BUILD_SPEC}",
                 cleanupProject     : false,
-                incrementalAnalysis: false,   // ← FULL
+                incrementalAnalysis: false,
                 projectDir         : '',
                 reportFile         : ''
               ])
@@ -89,85 +89,122 @@ pipeline {
       }
     }
 
-    stage('Export issues to SARIF (for Warnings NG)') {
+    stage('Export issues JSON -> SARIF (for Warnings NG)') {
       steps {
-        // 1) 指摘一覧をTSVで吐く（scriptable=タブ区切りで扱いやすい）
+        // JSONで出す（scriptableの罠を回避）
         bat """
           @echo off
-          echo [INFO] Export Klocwork issues to %KW_ISSUES_TSV%
-          rem 全体の指摘を出す（ファイルリスト指定なし）
-          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F scriptable > "%KW_ISSUES_TSV%"
-          echo [INFO] TSV size:
-          for %%A in ("%KW_ISSUES_TSV%") do echo %%~zA bytes
+          echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
+          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
+          echo [INFO] JSON size:
+          for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
         """
 
-        // 2) TSV -> SARIF（JenkinsのWarnings NGで“表”表示）
-        //    ※ PowerShell 5.x 前提で書く（?. を使わない）
+        // JSON -> SARIF
         powershell '''
-          $tsv = Join-Path $env:WORKSPACE $env:KW_ISSUES_TSV
+          $jsonPath  = Join-Path $env:WORKSPACE $env:KW_ISSUES_JSON
           $sarifPath = Join-Path $env:WORKSPACE $env:KW_ISSUES_SARIF
 
           function Write-EmptySarif($path) {
             $emptyObj = @{
-              '$schema' = 'https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-              version   = '2.1.0'
-              runs      = @(@{
-                tool    = @{ driver = @{ name = 'Klocwork'; rules = @() } }
-                results = @()
-              })
+              '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
+              version='2.1.0'
+              runs=@(@{ tool=@{ driver=@{ name='Klocwork'; rules=@() } }; results=@() })
             }
-            $json = $emptyObj | ConvertTo-Json -Depth 20
-            Set-Content -Path $path -Value $json -Encoding UTF8
+            $emptyObj | ConvertTo-Json -Depth 20 | Set-Content -Path $path -Encoding UTF8
           }
 
-          if (!(Test-Path $tsv)) {
-            Write-Host "[WARN] TSV not found: $tsv"
+          if (!(Test-Path $jsonPath)) {
+            Write-Host "[WARN] JSON not found: $jsonPath"
             Write-EmptySarif $sarifPath
             exit 0
           }
 
-          $lines = Get-Content -Path $tsv
+          $raw = Get-Content -Path $jsonPath -Raw
+          if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Host "[WARN] JSON empty"
+            Write-EmptySarif $sarifPath
+            exit 0
+          }
+
+          try {
+            $obj = $raw | ConvertFrom-Json
+          } catch {
+            Write-Host "[ERROR] ConvertFrom-Json failed. Dump first 500 chars:"
+            Write-Host ($raw.Substring(0, [Math]::Min(500, $raw.Length)))
+            Write-EmptySarif $sarifPath
+            exit 0
+          }
+
+          # 形が環境で違う可能性を吸収：
+          # - 配列そのもの
+          # - { issues: [...] } / { results: [...] } / { items: [...] } 的な形
+          $issues = $null
+          if ($obj -is [System.Array]) { $issues = $obj }
+          elseif ($obj.issues) { $issues = $obj.issues }
+          elseif ($obj.results) { $issues = $obj.results }
+          elseif ($obj.items) { $issues = $obj.items }
+
+          if ($null -eq $issues) {
+            Write-Host "[WARN] Could not find issues array in JSON. Keys:"
+            $obj.PSObject.Properties.Name | ForEach-Object { Write-Host " - $_" }
+            Write-EmptySarif $sarifPath
+            exit 0
+          }
+
           $results = New-Object System.Collections.Generic.List[Object]
 
-          foreach ($line in $lines) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-
-            # 想定: tab区切り（例）
-            # id<TAB>file<TAB>function<TAB>code<TAB>message<TAB>...<TAB>severity...
-            $cols = $line -split "`t"
-            if ($cols.Count -lt 5) { continue }
-
-            $file  = $cols[1]
-            $rule  = $cols[3]
-            $msg   = $cols[4]
-
-            if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
+          foreach ($it in $issues) {
+            # よくありそうなキー名を吸収
+            $file = $null
+            foreach ($k in @('file','path','filename','sourceFile','source_file')) {
+              if ($it.$k) { $file = [string]$it.$k; break }
+            }
             if ([string]::IsNullOrWhiteSpace($file)) { $file = 'unknown' }
-            if ([string]::IsNullOrWhiteSpace($msg))  { $msg  = '' }
+
+            $rule = $null
+            foreach ($k in @('code','checker','rule','ruleId','id')) {
+              if ($it.$k) { $rule = [string]$it.$k; break }
+            }
+            if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
+
+            $msg = $null
+            foreach ($k in @('message','msg','description','text')) {
+              if ($it.$k) { $msg = [string]$it.$k; break }
+            }
+            if ([string]::IsNullOrWhiteSpace($msg)) { $msg = '' }
+
+            $line = 1
+            foreach ($k in @('line','lineNumber','line_number','startLine')) {
+              if ($it.$k) {
+                $tmp = 0
+                if ([int]::TryParse([string]$it.$k, [ref]$tmp) -and $tmp -gt 0) { $line = $tmp }
+                break
+              }
+            }
 
             $results.Add(@{
-              ruleId   = $rule
-              message  = @{ text = $msg }
+              ruleId  = $rule
+              message = @{ text = $msg }
               locations = @(@{
                 physicalLocation = @{
                   artifactLocation = @{ uri = $file }
-                  region = @{ startLine = 1 }   # 行番号が無い前提 → 1固定
+                  region = @{ startLine = $line }
                 }
               })
             })
           }
 
           $sarifObj = @{
-            '$schema' = 'https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-            version   = '2.1.0'
-            runs      = @(@{
-              tool    = @{ driver = @{ name = 'Klocwork'; rules = @() } }
-              results = $results
+            '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
+            version='2.1.0'
+            runs=@(@{
+              tool=@{ driver=@{ name='Klocwork'; rules=@() } }
+              results=$results
             })
           }
 
-          $sarifJson = $sarifObj | ConvertTo-Json -Depth 20
-          Set-Content -Path $sarifPath -Value $sarifJson -Encoding UTF8
+          $sarifObj | ConvertTo-Json -Depth 20 | Set-Content -Path $sarifPath -Encoding UTF8
           Write-Host "[INFO] Wrote SARIF: $sarifPath"
           Write-Host ("[INFO] SARIF results: {0}" -f $results.Count)
         '''
@@ -176,8 +213,6 @@ pipeline {
 
     stage('Show issues as table in Jenkins (Warnings NG)') {
       steps {
-        // Warnings Next Generation が入っていれば、
-        // ビルド画面に「Warnings」(または Issues) のリンクが出て、表で見られます。
         recordIssues(
           enabledForFailure: true,
           tools: [sarif(pattern: "${env.KW_ISSUES_SARIF}")]
@@ -189,7 +224,7 @@ pipeline {
   post {
     always {
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_ISSUES_TSV}", allowEmptyArchive: true
+      archiveArtifacts artifacts: "${env.KW_ISSUES_JSON}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
     }
   }
