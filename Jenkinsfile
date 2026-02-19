@@ -9,12 +9,8 @@ pipeline {
 
   environment {
     MSYS2_ROOT = 'C:\\msys64'
-
-    // Makefile がリポジトリ直下にある前提（別フォルダなら例: 'src' 等に変更）
-    MAKE_WORKDIR = '.'
-
-    // make 引数（必要なら例: '-j4 all'）
-    MAKE_ARGS = ''
+    MAKE_WORKDIR = '.'         // Makefileのある場所
+    MAKE_ARGS = ''             // 例: '-j4 all' など
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
     KW_SERVER_CONFIG  = 'Validateサーバー'
@@ -57,31 +53,21 @@ pipeline {
         script {
           def c1 = "${env.MSYS2_ROOT}\\mingw64\\bin\\mingw32-make.exe"
           def c2 = "${env.MSYS2_ROOT}\\usr\\bin\\make.exe"
-
-          if (fileExists(c1))      { env.MAKE_EXE = c1 }
-          else if (fileExists(c2)) { env.MAKE_EXE = c2 }
-          else {
-            error("make が見つかりません: ${c1} / ${c2}")
-          }
+          if (fileExists(c1)) env.MAKE_EXE = c1
+          else if (fileExists(c2)) env.MAKE_EXE = c2
+          else error("make が見つかりません: ${c1} / ${c2}")
         }
 
         bat """
           @echo off
           echo [INFO] Using MAKE_EXE=%MAKE_EXE%
           "%MAKE_EXE%" --version
-          echo [INFO] MAKE_WORKDIR=%MAKE_WORKDIR%
-          if not exist "%WORKSPACE%\\%MAKE_WORKDIR%" (
-            echo [ERROR] workdir not found: %WORKSPACE%\\%MAKE_WORKDIR%
-            dir "%WORKSPACE%"
-            exit /b 2
-          )
         """
       }
     }
 
     stage('Klocwork Analysis') {
       steps {
-        // MSYS2 の sh 等を呼ぶ Makefile もあるので PATH も足す（害はほぼない）
         withEnv([
           "PATH+MSYS2_USR=${env.MSYS2_ROOT}\\usr\\bin",
           "PATH+MSYS2_MINGW64=${env.MSYS2_ROOT}\\mingw64\\bin"
@@ -92,16 +78,22 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            klocworkBuildSpecGeneration([
-              additionalOpts: '',
-              buildCommand  : "\"${env.MAKE_EXE}\" ${env.MAKE_ARGS}",
-              ignoreErrors  : false,
-              output        : "${env.KW_BUILD_SPEC}",
-              tool          : 'kwinject',
-              // ★ここが肝：空やnullにさせない
-              workDir       : "${env.MAKE_WORKDIR}"
-            ])
+            // ★BuildSpec生成は手動でkwinject（null付与を防ぐ）
+            bat """
+              @echo off
+              cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
 
+              echo [INFO] kwinject version
+              kwinject --version
+
+              if exist "%WORKSPACE%\\%KW_BUILD_SPEC%" del /f /q "%WORKSPACE%\\%KW_BUILD_SPEC%"
+
+              echo [INFO] generating build spec: %KW_BUILD_SPEC%
+              echo [INFO] run: kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
+              kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
+            """
+
+            // 解析（buildSpecは上で作ったkwinject.out）
             klocworkIncremental([
               additionalOpts: '',
               buildSpec     : "${env.KW_BUILD_SPEC}",
@@ -124,6 +116,7 @@ pipeline {
   post {
     always {
       archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
+      archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
     }
   }
 }
