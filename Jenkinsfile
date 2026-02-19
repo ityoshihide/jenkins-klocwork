@@ -125,8 +125,8 @@ pipeline {
               klocworkIncremental([
                 additionalOpts     : '',
                 buildSpec          : "${env.KW_BUILD_SPEC}",
-                cleanupProject     : true,
-                incrementalAnalysis: true,
+                cleanupProject     : false,
+                incrementalAnalysis: false,
                 projectDir         : '',
                 reportFile         : ''
               ])
