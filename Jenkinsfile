@@ -1,3 +1,5 @@
+// Jenkinsfile (Klocwork公式プラグイン版)
+
 pipeline {
   agent any
   triggers { githubPush() }
@@ -18,10 +20,6 @@ pipeline {
 
     DIFF_FILE_LIST = 'diff_file_list.txt'
     KW_BUILD_SPEC  = 'kwinject.out'
-
-    // ★Warnings NG 用
-    KW_ISSUES_JSON  = 'kw_issues.json'
-    KW_ISSUES_SARIF = 'kw_issues.sarif'
   }
 
   stages {
@@ -50,12 +48,10 @@ pipeline {
     stage('Decide previous commit') {
       steps {
         script {
-          // 優先順：前回成功 → 前回 → HEAD~1 → (取れなければ空)
           def prev = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
           if (!prev?.trim()) prev = env.GIT_PREVIOUS_COMMIT
 
           if (!prev?.trim()) {
-            // HEAD~1 を試す（初回ビルドだと失敗することあり）
             def rc = bat(returnStatus: true, script: 'git rev-parse HEAD~1 > .prev_commit 2>nul')
             if (rc == 0) {
               prev = readFile('.prev_commit').trim()
@@ -77,7 +73,6 @@ pipeline {
       steps {
         script {
           if (!env.KW_PREV_COMMIT?.trim()) {
-            // 差分基準が無いなら全ファイルにしておく（=差分解析は使わない想定）
             bat """
               @echo off
               git ls-files > "%DIFF_FILE_LIST%"
@@ -99,7 +94,7 @@ pipeline {
       }
     }
 
-    stage('Klocwork Analysis') {
+    stage('Klocwork Build & Analysis') {
       steps {
         withEnv([
           "PATH+MSYS2_USR=${env.MSYS2_ROOT}\\usr\\bin",
@@ -111,47 +106,33 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
-            // BuildSpec生成（kwinjectを手動実行）
+            // BuildSpec生成
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
-
-              echo [INFO] kwinject version
-              kwinject --version
-
-              if exist "%WORKSPACE%\\%KW_BUILD_SPEC%" del /f /q "%WORKSPACE%\\%KW_BUILD_SPEC%"
-
               echo [INFO] generating build spec: %KW_BUILD_SPEC%
-              echo [INFO] run: kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
               kwinject --output "%WORKSPACE%\\%KW_BUILD_SPEC%" "%MAKE_EXE%" %MAKE_ARGS%
             """
 
+            // 解析の実行
             script {
               if (env.KW_PREV_COMMIT?.trim()) {
-                // ★差分解析（previous commit を必ずハッシュで渡す）
-                klocworkIncremental([
-                  additionalOpts: '',
-                  buildSpec     : "${env.KW_BUILD_SPEC}",
-                  cleanupProject: false,
+                // 差分解析
+                klocworkIncremental(
+                  buildSpec: "${env.KW_BUILD_SPEC}",
                   differentialAnalysisConfig: [
-                    diffFileList     : "${env.DIFF_FILE_LIST}",
-                    diffType         : 'git',
+                    diffFileList: "${env.DIFF_FILE_LIST}",
+                    diffType: 'git',
                     gitPreviousCommit: "${env.KW_PREV_COMMIT}"
                   ],
-                  incrementalAnalysis: true,
-                  projectDir        : '',
-                  reportFile        : ''
-                ])
+                  incrementalAnalysis: true
+                )
               } else {
-                // previous commit が取れない時は、無理に差分解析せずフル解析
-                klocworkIncremental([
-                  additionalOpts: '',
-                  buildSpec     : "${env.KW_BUILD_SPEC}",
-                  cleanupProject: false,
-                  incrementalAnalysis: false,
-                  projectDir        : '',
-                  reportFile        : ''
-                ])
+                // フル解析
+                klocworkIncremental(
+                  buildSpec: "${env.KW_BUILD_SPEC}",
+                  incrementalAnalysis: false
+                )
               }
             }
           }
@@ -159,120 +140,46 @@ pipeline {
       }
     }
 
-    // ★追加：issues JSON -> SARIF
-    stage('Export issues JSON -> SARIF (for Warnings NG)') {
+    // ★★★ ここからが変更箇所 ★★★
+    // Klocworkプラグインの標準機能を使って結果を発行するステージ
+    stage('Publish Klocwork Results') {
       steps {
-        bat """
-          @echo off
-          echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
-          kwciagent list --system --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
-          echo [INFO] JSON size:
-          for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
-        """
-
-        powershell '''
-          $jsonPath  = Join-Path $env:WORKSPACE $env:KW_ISSUES_JSON
-          $sarifPath = Join-Path $env:WORKSPACE $env:KW_ISSUES_SARIF
-
-          function Write-EmptySarif($path) {
-            $emptyObj = @{
-              '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-              version='2.1.0'
-              runs=@(@{ tool=@{ driver=@{ name='Klocwork'; rules=@() } }; results=@() })
-            }
-            $emptyObj | ConvertTo-Json -Depth 20 | Set-Content -Path $path -Encoding UTF8
-          }
-
-          if (!(Test-Path $jsonPath)) { Write-Host "[WARN] JSON not found: $jsonPath"; Write-EmptySarif $sarifPath; exit 0 }
-
-          $raw = Get-Content -Path $jsonPath -Raw
-          if ([string]::IsNullOrWhiteSpace($raw)) { Write-Host "[WARN] JSON empty"; Write-EmptySarif $sarifPath; exit 0 }
-
-          try { $obj = $raw | ConvertFrom-Json } catch {
-            Write-Host "[ERROR] ConvertFrom-Json failed. Dump first 500 chars:"
-            Write-Host ($raw.Substring(0, [Math]::Min(500, $raw.Length)))
-            Write-EmptySarif $sarifPath
-            exit 0
-          }
-
-          $issues = $null
-          if ($obj -is [System.Array]) { $issues = $obj }
-          elseif ($obj.issues) { $issues = $obj.issues }
-          elseif ($obj.results) { $issues = $obj.results }
-          elseif ($obj.items) { $issues = $obj.items }
-
-          if ($null -eq $issues) {
-            Write-Host "[WARN] Could not find issues array in JSON. Keys:"
-            $obj.PSObject.Properties.Name | ForEach-Object { Write-Host " - $_" }
-            Write-EmptySarif $sarifPath
-            exit 0
-          }
-
-          $results = New-Object System.Collections.Generic.List[Object]
-
-          foreach ($it in $issues) {
-            $file = $null
-            foreach ($k in @('file','path','filename','sourceFile','source_file')) { if ($it.$k) { $file = [string]$it.$k; break } }
-            if ([string]::IsNullOrWhiteSpace($file)) { $file = 'unknown' }
-
-            $rule = $null
-            foreach ($k in @('code','checker','rule','ruleId','id')) { if ($it.$k) { $rule = [string]$it.$k; break } }
-            if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
-
-            $msg = $null
-            foreach ($k in @('message','msg','description','text')) { if ($it.$k) { $msg = [string]$it.$k; break } }
-            if ([string]::IsNullOrWhiteSpace($msg)) { $msg = '' }
-
-            $line = 1
-            foreach ($k in @('line','lineNumber','line_number','startLine')) {
-              if ($it.$k) { $tmp = 0; if ([int]::TryParse([string]$it.$k, [ref]$tmp) -and $tmp -gt 0) { $line = $tmp }; break }
-            }
-
-            $results.Add(@{
-              ruleId  = $rule
-              message = @{ text = $msg }
-              locations = @(@{
-                physicalLocation = @{
-                  artifactLocation = @{ uri = $file }
-                  region = @{ startLine = $line }
-                }
-              })
-            })
-          }
-
-          $sarifObj = @{
-            '$schema'='https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json'
-            version='2.1.0'
-            runs=@(@{
-              tool=@{ driver=@{ name='Klocwork'; rules=@() } }
-              results=$results
-            })
-          }
-
-          $sarifObj | ConvertTo-Json -Depth 20 | Set-Content -Path $sarifPath -Encoding UTF8
-          Write-Host "[INFO] Wrote SARIF: $sarifPath"
-          Write-Host ("[INFO] SARIF results: {0}" -f $results.Count)
-        '''
+        echo "Publishing Klocwork results to Jenkins dashboard..."
+        
+        // このステップが、ビルド結果ページに「Klocwork解析結果」のグラフと表を追加します。
+        // 解析は既に終わっているので、ここでは結果をJenkinsに登録するだけです。
+        klocworkIntegration(
+            // Klocworkサーバーから直接結果を取得するため、レポートファイルの指定は不要
+            // reportFile: '' 
+        )
       }
     }
 
-    // ★追加：JenkinsのWarningsに表示
-    stage('Show issues as table in Jenkins (Warnings NG)') {
-      steps {
-        recordIssues(
-          enabledForFailure: true,
-          tools: [sarif(pattern: "${env.KW_ISSUES_SARIF}")]
-        )
-      }
+    // Klocworkプラグインの標準機能で品質ゲートを評価するステージ
+    stage('Klocwork Quality Gateway') {
+        steps {
+            echo "Checking Klocwork quality gateway..."
+            
+            // このステップが、検出された問題の数に基づいてビルドステータスを変更します。
+            klocworkQualityGateway(
+                // 例：'Critical' な問題が1件でもあればビルドを 'UNSTABLE' にする
+                unstableConditions: [
+                    [severity: 'Critical', threshold: '0']
+                ],
+                // 例：'Critical' な問題が10件以上あればビルドを 'FAILURE' にする
+                failedConditions: [
+                    [severity: 'Critical', threshold: '9']
+                ]
+            )
+        }
     }
   }
 
   post {
     always {
+      // 不要になったSARIF関連のアーティファクトを削除
       archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_ISSUES_JSON}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
     }
   }
 }
