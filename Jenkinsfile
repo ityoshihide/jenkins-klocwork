@@ -74,7 +74,7 @@ pipeline {
           '''
 
           // diff_file_list.txt を kwinject.out の表記（..\revisions\...）に寄せて作る
-          // - / -> \ 変換
+          // - / -> バックスラッシュ に変換
           // - revisions\... は ..\revisions\... に寄せる
           // - 拡張子でフィルタ（正規表現は使わない：$ を回避）
           bat '''
@@ -85,17 +85,17 @@ pipeline {
             for /F "usebackq delims=" %%F in ("diff_file_list_raw.txt") do (
               set "p=%%F"
               if not "!p!"=="" (
-                rem / を \ に変換
+                rem / をバックスラッシュに変換
                 set "p=!p:/=\\!"
 
                 rem 拡張子でフィルタ（必要に応じて追加OK）
                 set "ext=%%~xF"
-                if /I "!ext!"==".c"  goto _ACCEPT
-                if /I "!ext!"==".cc" goto _ACCEPT
+                if /I "!ext!"==".c"   goto _ACCEPT
+                if /I "!ext!"==".cc"  goto _ACCEPT
                 if /I "!ext!"==".cpp" goto _ACCEPT
                 if /I "!ext!"==".cxx" goto _ACCEPT
-                if /I "!ext!"==".h"  goto _ACCEPT
-                if /I "!ext!"==".hh" goto _ACCEPT
+                if /I "!ext!"==".h"   goto _ACCEPT
+                if /I "!ext!"==".hh"  goto _ACCEPT
                 if /I "!ext!"==".hpp" goto _ACCEPT
                 echo [SKIP] !p!
                 goto _NEXT
@@ -124,4 +124,82 @@ pipeline {
           '''
 
           // kwciagent 実行用のカレントディレクトリを用意（%WORKSPACE%\\_kwcwd）
-          ba
+          bat '''
+            @echo on
+            if not exist "%WORKSPACE%\\%KW_CWD_SUBDIR%" mkdir "%WORKSPACE%\\%KW_CWD_SUBDIR%"
+          '''
+
+          // 1) kwinject（ビルドスペック生成）
+          klocworkBuildSpecGeneration([
+            additionalOpts: '',
+            buildCommand: "\"${env.MSBUILD}\" \"${env.SLN}\" /t:Rebuild",
+            ignoreErrors: false,
+            output: 'kwinject.out',
+            tool: 'kwinject',
+            workDir: ''
+          ])
+
+          // ガード（空ファイル事故防止）
+          bat '''
+            @echo on
+            if not exist kwinject.out exit /b 1
+            for %%A in (kwinject.out) do if %%~zA==0 exit /b 1
+            echo [INFO] kwinject.out path = %WORKSPACE%\\kwinject.out
+          '''
+
+          // 2) kwciagent を "bat で直叩き"（cd を確実に効かせる）
+          bat '''
+            @echo on
+
+            rem --- kwciagent プロジェクト作業領域を作成 ---
+            if not exist "%WORKSPACE%\\%KWLP_DIR%" mkdir "%WORKSPACE%\\%KWLP_DIR%"
+            if not exist "%WORKSPACE%\\%KWPS_DIR%" mkdir "%WORKSPACE%\\%KWPS_DIR%"
+
+            rem --- create ---
+            kwciagent create --url http://192.168.137.1:2540/%KW_PROJECT% --project-dir "%WORKSPACE%\\%KWLP_DIR%" --settings-dir "%WORKSPACE%\\%KWPS_DIR%" --build-spec "%WORKSPACE%\\kwinject.out"
+            if errorlevel 1 exit /b 1
+
+            rem --- ここが重要：cwd を %WORKSPACE%\\_kwcwd に固定 ---
+            cd /d "%WORKSPACE%\\%KW_CWD_SUBDIR%"
+
+            rem --- diff のパスが存在するか確認（..\\revisions\\... が %WORKSPACE%\\revisions\\... に解決される想定）---
+            echo ===== verify diff paths exist (from %CD%) =====
+            for /F "usebackq delims=" %%F in ("%WORKSPACE%\\diff_file_list.txt") do (
+              if exist "%%F" (echo [OK] %%F) else (echo [NG] %%F & exit /b 1)
+            )
+            echo =============================================
+
+            rem --- run ---
+            kwciagent run --project-dir "%WORKSPACE%\\%KWLP_DIR%" --license-host 192.168.137.1 --license-port 27000 -Y -L --build-spec "%WORKSPACE%\\kwinject.out" @"%WORKSPACE%\\diff_file_list.txt"
+            if errorlevel 1 exit /b 1
+
+            rem --- list（任意）---
+            kwciagent list --project-dir "%WORKSPACE%\\%KWLP_DIR%" --license-host 192.168.137.1 --license-port 27000 -F xml @"%WORKSPACE%\\diff_file_list.txt" || exit /b 0
+          '''
+
+          // 3) Jenkins に結果連携（XSync）
+          klocworkIssueSync([
+            additionalOpts: '',
+            dryRun: false,
+            lastSync: '03-00-0000 00:00:00',
+            projectRegexp: '',
+            statusAnalyze: true,
+            statusDefer: true,
+            statusFilter: true,
+            statusFix: true,
+            statusFixInLaterRelease: false,
+            statusFixInNextRelease: true,
+            statusIgnore: true,
+            statusNotAProblem: true
+          ])
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'kwinject.out,diff_file_list_raw.txt,diff_file_list.txt,kwtables/**', onlyIfSuccessful: false
+    }
+  }
+}
