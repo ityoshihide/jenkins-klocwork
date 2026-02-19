@@ -25,7 +25,7 @@ void buffer_overflow_via_strcat(void)
 void buffer_overflow_via_memcpy(void)
 {
     char dst[8];
-    char src[24];
+    char src[32];
 
     memset(src, 'A', sizeof(src));
     src[sizeof(src) - 1] = '\0';
