@@ -14,10 +14,10 @@ pipeline {
     // Jenkins > Manage Jenkins > Configure System > Klocwork Server Config の設定名
     KW_SERVER_CONFIG  = 'Validateサーバー'
 
-    // Validate 側のプロジェクト名（kwciagent set で使用）
+    // Validate 側のプロジェクト名（serverProject / kwciagent set で使用）
     KW_PROJECT = 'jenkins_demo'
 
-    // ltoken
+    // ltoken（BuildWrapperが自動検出しているなら無くても可）
     KW_LTOKEN = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
   }
 
@@ -35,12 +35,11 @@ git fetch --unshallow || exit /b 0
 
     stage('Klocwork Diff Analysis') {
       steps {
-        // installConfig / serverConfig は必須
-        // projectName はこの環境の plugin では無効なので渡さない
         klocworkWrapper(
-          installConfig: "${env.KW_INSTALL_CONFIG}",
-          serverConfig : "${env.KW_SERVER_CONFIG}",
-          ltoken       : "${env.KW_LTOKEN}"
+          installConfig : "${env.KW_INSTALL_CONFIG}",
+          serverConfig  : "${env.KW_SERVER_CONFIG}",
+          serverProject : "${env.KW_PROJECT}",
+          ltoken        : "${env.KW_LTOKEN}"
         ) {
           bat '''@echo on
 setlocal
@@ -96,7 +95,7 @@ if not exist "%WORKSPACE%\\kwinject.out" exit /b 1
 
 REM ===== IMPORTANT: cwd 対策 =====
 REM kwinject.out 内が ..\\revisions\\... を含むので、
-REM %WORKSPACE%\\_kwcwd に cd してから kwciagent run することで
+REM %WORKSPACE%\\_kwcwd に cd してから kwciagent run すると
 REM ..\\revisions\\... => %WORKSPACE%\\revisions\\... に解決される
 if not exist "%WORKSPACE%\\_kwcwd" mkdir "%WORKSPACE%\\_kwcwd"
 
