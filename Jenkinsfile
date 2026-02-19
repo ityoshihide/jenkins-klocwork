@@ -1,23 +1,50 @@
-
 pipeline {
   agent any
-  options { skipDefaultCheckout(true) }
+  triggers { githubPush() }
+
+  options {
+    skipDefaultCheckout(true)
+    timestamps()
+  }
 
   environment {
-    // ここは環境に合わせて調整
-    KW_SERVER_URL   = 'http://192.168.137.1:2540'
-    KW_PROJECT_NAME = 'jenkins_demo'
+    KW_LTOKEN        = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
+    KW_SERVER_URL    = 'http://192.168.137.1:2540'
+    KW_SERVER_CONFIG = 'Validateサーバー'
+    KW_PROJECT       = 'jenkins_demo'
 
-    // Warnings NG 用
     KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
   }
 
   stages {
-
     stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Ensure Klocwork Local Project (.kwlp/.kwps)') {
       steps {
-        checkout scm
+        script {
+          def kwlpDir = "${env.WORKSPACE}\\.kwlp"
+          def kwpsDir = "${env.WORKSPACE}\\.kwps"
+
+          def kwlpOk = fileExists(kwlpDir)
+          def kwpsOk = fileExists(kwpsDir)
+
+          if (!kwlpOk || !kwpsOk) {
+            echo "[INFO] .kwlp/.kwps not found. Running kwcheck create..."
+
+            bat """
+              @echo off
+              cd /d "%WORKSPACE%"
+
+              kwcheck --version
+              kwcheck create --url ${env.KW_SERVER_URL} --project ${env.KW_PROJECT}
+            """
+          } else {
+            echo "[INFO] .kwlp/.kwps already exist. Skipping kwcheck create."
+          }
+        }
       }
     }
 
@@ -25,16 +52,15 @@ pipeline {
       steps {
         klocworkWrapper(
           installConfig: '-- なし --',
-          ltoken: 'C:\\Users\\MSY11199\\.klocwork\\ltoken',
-          serverConfig: 'Validateサーバー',
-          serverProject: 'jenkins_demo'
+          ltoken: "${env.KW_LTOKEN}",
+          serverConfig: "${env.KW_SERVER_CONFIG}",
+          serverProject: "${env.KW_PROJECT}"
         ) {
-
-          // 毎回クリーン
+          // 毎回クリーン（buildspec/tables）
           bat 'if exist kwinject.out del /f /q kwinject.out'
           bat 'if exist kwtables rmdir /s /q kwtables'
 
-          // 1) kwinject 相当
+          // 1) kwinject 相当（buildspec生成）
           klocworkBuildSpecGeneration([
             additionalOpts: '',
             buildCommand: '"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\MSBuild\\Current\\Bin\\MSBuild.exe" "C:\\Klocwork\\CommandLine25.4\\samples\\demosthenes\\vs2022\\4.sln" /t:Rebuild',
@@ -44,7 +70,7 @@ pipeline {
             workDir: ''
           ])
 
-          // ガード（空ファイル事故防止）
+          // buildspec ガード（空ファイル事故防止）
           bat 'if not exist kwinject.out exit /b 1'
           bat 'for %%A in (kwinject.out) do if %%~zA==0 exit /b 1'
 
@@ -60,13 +86,13 @@ pipeline {
             tablesDir: 'kwtables'
           ])
 
-          // 3) Load（displayChartはfalseのまま）
+          // 3) Load
           klocworkIntegrationStep2(
             reportConfig: [displayChart: false],
             serverConfig: [additionalOpts: '', buildName: '', tablesDir: 'kwtables']
           )
 
-          // 4) Sync
+          // 4) Sync（サーバの指摘状態を同期）
           klocworkIssueSync([
             additionalOpts: '',
             dryRun: false,
@@ -85,12 +111,12 @@ pipeline {
       }
     }
 
-    stage('Export issues JSON -> SARIF (for Warnings NG)') {
+    stage('Export issues JSON -> SARIF (Warnings NG)') {
       steps {
         bat """
           @echo off
           echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
-          kwciagent list --url "%KW_SERVER_URL%/%KW_PROJECT_NAME%" --system -F json > "%KW_ISSUES_JSON%"
+          kwciagent list --system --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
           echo [INFO] JSON size:
           for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
         """
@@ -109,6 +135,7 @@ pipeline {
           }
 
           if (!(Test-Path $jsonPath)) { Write-Host "[WARN] JSON not found: $jsonPath"; Write-EmptySarif $sarifPath; exit 0 }
+
           $raw = Get-Content -Path $jsonPath -Raw
           if ([string]::IsNullOrWhiteSpace($raw)) { Write-Host "[WARN] JSON empty"; Write-EmptySarif $sarifPath; exit 0 }
 
@@ -119,7 +146,6 @@ pipeline {
             exit 0
           }
 
-          # kwciagent list の出力形に吸収
           $issues = $null
           if ($obj -is [System.Array]) { $issues = $obj }
           elseif ($obj.issues) { $issues = $obj.issues }
@@ -144,13 +170,9 @@ pipeline {
             foreach ($k in @('code','checker','rule','ruleId','id')) { if ($it.$k) { $rule = [string]$it.$k; break } }
             if ([string]::IsNullOrWhiteSpace($rule)) { $rule = 'KLOCWORK' }
 
-            $sev = $null
-            foreach ($k in @('severityCode','severity','sev')) { if ($it.$k -ne $null) { $sev = [string]$it.$k; break } }
-
             $msg = $null
             foreach ($k in @('message','msg','description','text')) { if ($it.$k) { $msg = [string]$it.$k; break } }
             if ([string]::IsNullOrWhiteSpace($msg)) { $msg = '' }
-            if (![string]::IsNullOrWhiteSpace($sev)) { $msg = "[severityCode=$sev] $msg" }
 
             $line = 1
             foreach ($k in @('line','lineNumber','line_number','startLine')) {
@@ -159,7 +181,6 @@ pipeline {
 
             $results.Add(@{
               ruleId  = $rule
-              level   = 'warning'
               message = @{ text = $msg }
               locations = @(@{
                 physicalLocation = @{
@@ -199,8 +220,7 @@ pipeline {
   post {
     always {
       archiveArtifacts artifacts: 'kwinject.out,kwtables/**', onlyIfSuccessful: false
-      archiveArtifacts artifacts: "${env.KW_ISSUES_JSON}", allowEmptyArchive: true
-      archiveArtifacts artifacts: "${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
+      archiveArtifacts artifacts: "${env.KW_ISSUES_JSON},${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
     }
   }
 }
