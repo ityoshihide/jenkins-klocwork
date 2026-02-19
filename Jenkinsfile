@@ -1,14 +1,11 @@
 pipeline {
   agent any
-  options { skipDefaultCheckout(true) }
+  triggers { githubPush() }
 
-  stages {
-
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
-    }
+  options {
+    skipDefaultCheckout(true)
+    timestamps()
+  }
 
     stage('Klocwork (Plugin)') {
       steps {
