@@ -1,9 +1,5 @@
-// Jenkinsfile（make だけに絞った最小構成）
-// ※MSYS2 を想定：C:\msys64\mingw64\bin\mingw32-make.exe
-
 pipeline {
   agent any
-
   triggers { githubPush() }
 
   options {
@@ -12,15 +8,14 @@ pipeline {
   }
 
   environment {
-    // ===== make のフルパス（ここだけ合わせればOK）=====
-    MAKE_EXE = 'C:\\msys64\\mingw64\\bin\\mingw32-make.exe'
+    // MSYS2の想定ルート（違うならここだけ直す）
+    MSYS2_ROOT = 'C:\\msys64'
 
-    // Makefile のあるディレクトリ（リポジトリ直下なら空）
+    // Makefileの場所（リポジトリ直下なら空）
     MAKE_WORKDIR = ''
 
-    // make に渡す引数（例：-j4 / target など）
+    // make 引数（例: -j4 / all / clean など）
     MAKE_ARGS = ''
-    // ===================================================
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
     KW_SERVER_CONFIG  = 'Validateサーバー'
@@ -32,9 +27,7 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      steps { checkout scm }
     }
 
     stage('Create diff file list') {
@@ -60,14 +53,34 @@ pipeline {
       }
     }
 
-    stage('Verify make') {
+    stage('Resolve make path') {
       steps {
+        script {
+          // 候補（まずmingw32-make優先、無ければusr/bin/make）
+          def c1 = "${env.MSYS2_ROOT}\\mingw64\\bin\\mingw32-make.exe"
+          def c2 = "${env.MSYS2_ROOT}\\usr\\bin\\make.exe"
+
+          if (fileExists(c1)) {
+            env.MAKE_EXE = c1
+          } else if (fileExists(c2)) {
+            env.MAKE_EXE = c2
+          } else {
+            error("""make が見つかりません。
+想定パス:
+- ${c1}
+- ${c2}
+
+対処:
+- MSYS2 を ${env.MSYS2_ROOT} にインストール
+- MSYS2で pacman -S make / pacman -S mingw-w64-x86_64-gcc を実行
+- もしくは MAKE_EXE を実在パスに修正
+""")
+          }
+        }
+
         bat """
           @echo off
-          if not exist "%MAKE_EXE%" (
-            echo [ERROR] make not found: %MAKE_EXE%
-            exit /b 2
-          )
+          echo [INFO] Using MAKE_EXE=%MAKE_EXE%
           "%MAKE_EXE%" --version
         """
       }
@@ -75,8 +88,6 @@ pipeline {
 
     stage('Klocwork Analysis') {
       steps {
-        // Jenkinsサービス環境で PATH が通ってなくても動くように、
-        // make はフルパス指定で呼ぶ（sh/gcc等が必要なら PATH 追加を検討）
         klocworkWrapper(
           installConfig: '-- なし --',
           ltoken: "${env.KW_LTOKEN}",
