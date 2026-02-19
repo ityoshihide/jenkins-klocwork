@@ -10,7 +10,6 @@ pipeline {
   environment {
     MSYS2_ROOT   = 'C:\\msys64'
     MAKE_WORKDIR = '.'
-    // ★確実に全ビルドさせるなら all 推奨（プロジェクトに合わせて調整）
     MAKE_ARGS    = 'all'
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
@@ -22,9 +21,6 @@ pipeline {
     // Warnings NG に渡す
     KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
-
-    // kwcheck create 用（必要なら調整）
-    KW_SERVER_URL = 'http://192.168.137.1:2540'
   }
 
   stages {
@@ -50,27 +46,24 @@ pipeline {
       }
     }
 
-    // ★追加：.kwlp/.kwps が無ければ kwcheck create（あれば何もしない）
+    // ★追加：.kwlp/.kwps が無い場合のみ kwcheck create（オプション無し）
     stage('Ensure Klocwork Local Project') {
       steps {
         script {
-          def kwlpProps = "${env.WORKSPACE}\\.kwlp\\kwlp.properties"
-          def kwpsDir   = "${env.WORKSPACE}\\.kwps"
+          def kwlpDir = "${env.WORKSPACE}\\.kwlp"
+          def kwpsDir = "${env.WORKSPACE}\\.kwps"
 
-          def kwlpOk = fileExists(kwlpProps)
+          def kwlpOk = fileExists(kwlpDir)
           def kwpsOk = fileExists(kwpsDir)
 
           if (!kwlpOk || !kwpsOk) {
-            echo "[INFO] .kwlp/.kwps not found (or incomplete). Running kwcheck create..."
+            echo "[INFO] .kwlp/.kwps not found. Running: kwcheck create"
 
             bat """
               @echo off
               cd /d "%WORKSPACE%"
 
-              echo [INFO] kwcheck version
               kwcheck --version
-
-              echo [INFO] kwcheck create --url %KW_SERVER_URL% --project %KW_SERVER_PROJECT%
               kwcheck create
             """
           } else {
@@ -80,7 +73,7 @@ pipeline {
       }
     }
 
-    // ★追加：クリーンビルド（生成物だけ消す）
+    // ★クリーンビルド（.kwlp/.kwpsは触らない）
     stage('Clean build outputs (force rebuild)') {
       steps {
         bat """
@@ -88,7 +81,6 @@ pipeline {
           cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
 
           echo [INFO] Clean build outputs to avoid 'Nothing to be done'
-          rem プロジェクトに合わせて “生成物だけ” 消す
           if exist out (
             del /q out\\*.o 2>nul
             del /q out\\*.obj 2>nul
@@ -96,7 +88,6 @@ pipeline {
             del /q out\\demosthenes.exe 2>nul
           )
           del /q core* 2>nul
-
           echo [INFO] Done.
         """
       }
@@ -147,7 +138,6 @@ pipeline {
 
     stage('Export issues JSON -> SARIF (for Warnings NG)') {
       steps {
-        // JSONで出す（scriptableの罠を回避）
         bat """
           @echo off
           echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
@@ -156,7 +146,6 @@ pipeline {
           for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
         """
 
-        // JSON -> SARIF
         powershell '''
           $jsonPath  = Join-Path $env:WORKSPACE $env:KW_ISSUES_JSON
           $sarifPath = Join-Path $env:WORKSPACE $env:KW_ISSUES_SARIF
