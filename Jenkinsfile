@@ -46,6 +46,7 @@ pipeline {
       }
     }
 
+    // ★追加：.kwlp/.kwps が無い場合のみ kwcheck create（オプション無し）
     stage('Ensure Klocwork Local Project') {
       steps {
         script {
@@ -72,6 +73,7 @@ pipeline {
       }
     }
 
+    // ★クリーンビルド（.kwlp/.kwpsは触らない）
     stage('Clean build outputs (force rebuild)') {
       steps {
         bat """
@@ -103,6 +105,7 @@ pipeline {
             serverConfig: "${env.KW_SERVER_CONFIG}",
             serverProject: "${env.KW_SERVER_PROJECT}"
           ) {
+            // BuildSpec生成（kwinjectを手動実行）
             bat """
               @echo off
               cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
@@ -118,6 +121,7 @@ pipeline {
             """
 
             script {
+              // ★差分ではなく、全体解析に固定
               klocworkIncremental([
                 additionalOpts     : '',
                 buildSpec          : "${env.KW_BUILD_SPEC}",
@@ -137,7 +141,7 @@ pipeline {
         bat """
           @echo off
           echo [INFO] Export Klocwork issues to %KW_ISSUES_JSON%
-          kwcheck list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
+          kwciagent list --project-dir "%WORKSPACE%\\.kwlp" --license-host 192.168.137.1 --license-port 27000 -F json > "%KW_ISSUES_JSON%"
           echo [INFO] JSON size:
           for %%A in ("%KW_ISSUES_JSON%") do echo %%~zA bytes
         """
