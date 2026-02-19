@@ -8,17 +8,18 @@ pipeline {
   }
 
   environment {
-    MSYS2_ROOT   = 'C:\\msys64'
-    MAKE_WORKDIR = '.'
-    MAKE_ARGS    = 'all'
+    MSYS2_ROOT    = 'C:\\msys64'
+    MAKE_WORKDIR  = '.'
+    MAKE_ARGS     = ''
 
     KW_LTOKEN         = 'C:\\Users\\MSY11199\\.klocwork\\ltoken'
     KW_SERVER_CONFIG  = 'Validateサーバー'
     KW_SERVER_PROJECT = 'jenkins_demo'
 
-    KW_BUILD_SPEC = 'kwinject.out'
+    DIFF_FILE_LIST = 'diff_file_list.txt'
+    KW_BUILD_SPEC  = 'kwinject.out'
 
-    // Warnings NG に渡す
+    // ★Warnings NG 用
     KW_ISSUES_JSON  = 'kw_issues.json'
     KW_ISSUES_SARIF = 'kw_issues.sarif'
   }
@@ -46,54 +47,59 @@ pipeline {
       }
     }
 
-    // ★追加：.kwlp/.kwps が無い場合のみ kwcheck create（オプション無し）
-    stage('Ensure Klocwork Local Project') {
+    stage('Decide previous commit') {
       steps {
         script {
-          def kwlpDir = "${env.WORKSPACE}\\.kwlp"
-          def kwpsDir = "${env.WORKSPACE}\\.kwps"
+          // 優先順：前回成功 → 前回 → HEAD~1 → (取れなければ空)
+          def prev = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+          if (!prev?.trim()) prev = env.GIT_PREVIOUS_COMMIT
 
-          def kwlpOk = fileExists(kwlpDir)
-          def kwpsOk = fileExists(kwpsDir)
+          if (!prev?.trim()) {
+            // HEAD~1 を試す（初回ビルドだと失敗することあり）
+            def rc = bat(returnStatus: true, script: 'git rev-parse HEAD~1 > .prev_commit 2>nul')
+            if (rc == 0) {
+              prev = readFile('.prev_commit').trim()
+            }
+          }
 
-          if (!kwlpOk || !kwpsOk) {
-            echo "[INFO] .kwlp/.kwps not found. Running: kwcheck create"
-
-            bat """
-              @echo off
-              cd /d "%WORKSPACE%"
-
-              kwcheck --version
-              kwcheck create
-            """
+          if (prev?.trim()) {
+            env.KW_PREV_COMMIT = prev.trim()
+            echo "Using KW_PREV_COMMIT=${env.KW_PREV_COMMIT}"
           } else {
-            echo "[INFO] .kwlp/.kwps already exist. Skipping kwcheck create."
+            env.KW_PREV_COMMIT = ''
+            echo "KW_PREV_COMMIT not available -> fallback to full analysis"
           }
         }
       }
     }
 
-    // ★クリーンビルド（.kwlp/.kwpsは触らない）
-    stage('Clean build outputs (force rebuild)') {
+    stage('Create diff file list') {
       steps {
-        bat """
-          @echo off
-          cd /d "%WORKSPACE%\\%MAKE_WORKDIR%"
-
-          echo [INFO] Clean build outputs to avoid 'Nothing to be done'
-          if exist out (
-            del /q out\\*.o 2>nul
-            del /q out\\*.obj 2>nul
-            del /q out\\demosthenes 2>nul
-            del /q out\\demosthenes.exe 2>nul
-          )
-          del /q core* 2>nul
-          echo [INFO] Done.
-        """
+        script {
+          if (!env.KW_PREV_COMMIT?.trim()) {
+            // 差分基準が無いなら全ファイルにしておく（=差分解析は使わない想定）
+            bat """
+              @echo off
+              git ls-files > "%DIFF_FILE_LIST%"
+              echo [INFO] diff file list (fallback: all files):
+              type "%DIFF_FILE_LIST%"
+            """
+          } else {
+            bat """
+              @echo off
+              git diff --name-only %KW_PREV_COMMIT% HEAD > "%DIFF_FILE_LIST%"
+              for %%A in ("%DIFF_FILE_LIST%") do if %%~zA==0 (
+                git ls-files > "%DIFF_FILE_LIST%"
+              )
+              echo [INFO] diff file list (%KW_PREV_COMMIT%..HEAD):
+              type "%DIFF_FILE_LIST%"
+            """
+          }
+        }
       }
     }
 
-    stage('Klocwork Analysis (FULL)') {
+    stage('Klocwork Analysis') {
       steps {
         withEnv([
           "PATH+MSYS2_USR=${env.MSYS2_ROOT}\\usr\\bin",
@@ -121,21 +127,39 @@ pipeline {
             """
 
             script {
-              // ★差分ではなく、全体解析に固定
-              klocworkIncremental([
-                additionalOpts     : '',
-                buildSpec          : "${env.KW_BUILD_SPEC}",
-                cleanupProject     : false,
-                incrementalAnalysis: false,
-                projectDir         : '',
-                reportFile         : ''
-              ])
+              if (env.KW_PREV_COMMIT?.trim()) {
+                // ★差分解析（previous commit を必ずハッシュで渡す）
+                klocworkIncremental([
+                  additionalOpts: '',
+                  buildSpec     : "${env.KW_BUILD_SPEC}",
+                  cleanupProject: false,
+                  differentialAnalysisConfig: [
+                    diffFileList     : "${env.DIFF_FILE_LIST}",
+                    diffType         : 'git',
+                    gitPreviousCommit: "${env.KW_PREV_COMMIT}"
+                  ],
+                  incrementalAnalysis: true,
+                  projectDir        : '',
+                  reportFile        : ''
+                ])
+              } else {
+                // previous commit が取れない時は、無理に差分解析せずフル解析
+                klocworkIncremental([
+                  additionalOpts: '',
+                  buildSpec     : "${env.KW_BUILD_SPEC}",
+                  cleanupProject: false,
+                  incrementalAnalysis: false,
+                  projectDir        : '',
+                  reportFile        : ''
+                ])
+              }
             }
           }
         }
       }
     }
 
+    // ★追加：issues JSON -> SARIF
     stage('Export issues JSON -> SARIF (for Warnings NG)') {
       steps {
         bat """
@@ -232,6 +256,7 @@ pipeline {
       }
     }
 
+    // ★追加：JenkinsのWarningsに表示
     stage('Show issues as table in Jenkins (Warnings NG)') {
       steps {
         recordIssues(
@@ -244,6 +269,7 @@ pipeline {
 
   post {
     always {
+      archiveArtifacts artifacts: "${env.DIFF_FILE_LIST}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_BUILD_SPEC}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_ISSUES_JSON}", allowEmptyArchive: true
       archiveArtifacts artifacts: "${env.KW_ISSUES_SARIF}", allowEmptyArchive: true
