@@ -1,3 +1,3 @@
-# Github ActionsによるKlocworkの解析自動化
+# JenkinsによるKlocworkの解析自動化
 Githubでコミットされたタイミングで自動で統合ビルド解析をかける.
 
